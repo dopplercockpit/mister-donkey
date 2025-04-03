@@ -1,0 +1,8 @@
+# Ignore virtual env
+venv/
+.env
+
+# Ignore DB & Python junk
+*.db
+__pycache__/
+*.pyc
