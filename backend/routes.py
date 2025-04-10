@@ -61,6 +61,7 @@ def add_or_update_agent():
 @app.route("/prompt", methods=["POST"])
 def handle_prompt():
     data = request.json
+    print("📥 Incoming data:", data)
     user_prompt = data.get("prompt")
 
     if not user_prompt:

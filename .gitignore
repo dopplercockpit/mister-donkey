@@ -1,8 +1,16 @@
-# Ignore virtual env
-venv/
-.env
+# Node
+node_modules
+.env.local
+.vite
+dist
 
-# Ignore DB & Python junk
-*.db
+# Python
 __pycache__/
 *.pyc
+.env
+
+# VSCode
+.vscode/
+
+# Virtual environments
+venv/
