@@ -1,0 +1,17 @@
+# Node
+node_modules
+.env.local
+.vite
+dist
+
+# Python
+__pycache__/
+*.pyc
+.env
+*.db
+
+# VSCode
+.vscode/
+
+# Virtual environments
+venv/
