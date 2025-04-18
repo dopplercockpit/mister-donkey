@@ -16,10 +16,12 @@ app = Flask(__name__)
 # If your front-end is at http://localhost:5173, use that. 
 # For broader testing, you can do CORS(app, resources={r"/*": {"origins": "*"}}) for development.
 
-CORS(app)
+CORS(app, origins=["https://weatherjackass.com"])
+# CORS(app, origins=["https://www.weatherjackass.com"])
 
 # Register the blueprint from routes.py
 app.register_blueprint(routes_bp)
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    PORT = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=PORT)
