@@ -6,18 +6,15 @@ from routes import bp as routes_bp
 
 # 2) load .env
 load_dotenv()
-# (Right after load_dotenv())
-print("DEBUG WeatherAPI Key:", os.getenv("WEATHERAPI_KEY"))
-
 
 app = Flask(__name__)
-#CORS(app, resources={r"/prompt": {"origins": "http://127.0.0.1:5173"}})
+#CORS(app, resources={r"/prompt": {"origins": "http://127.0.0.1:5173"}}) For local testing only.DO NOT USE IN PRODUCTION.
 # ↑ Adjust "http://127.0.0.1:5173" to match your React dev server’s actual origin
 # If your front-end is at http://localhost:5173, use that. 
 # For broader testing, you can do CORS(app, resources={r"/*": {"origins": "*"}}) for development.
 
-CORS(app, origins=["https://weatherjackass.com"])
-# CORS(app, origins=["https://www.weatherjackass.com"])
+CORS(app, origins=["https://weatherjackass.com"])# This is the original line for COR for production. 
+# Dormant string - CORS(app, origins=["https://www.weatherjackass.com"])
 
 # Register the blueprint from routes.py
 app.register_blueprint(routes_bp)

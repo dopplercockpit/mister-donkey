@@ -11,6 +11,7 @@ WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY")
 WEATHERAPI_URL = "http://api.weatherapi.com/v1"
 
 
+
 def get_geolocation(city_name):
     """
     Given a city name, return (lat, lon, full name)

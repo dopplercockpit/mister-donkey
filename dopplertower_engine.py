@@ -8,6 +8,8 @@ import os
 import math
 from io import BytesIO
 from PIL import Image
+from nlpprepro import preprocess_with_gpt
+
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")

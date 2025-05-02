@@ -2,6 +2,7 @@
 import re
 from dopplertower_engine import get_full_weather_summary
 from geo_utils_helper import get_geolocation, reverse_geolocate
+from nlpprepro import preprocess_with_gpt
 
 def normalize_city_name(city: str) -> str:
     return " ".join(w.capitalize() for w in city.strip().split())
@@ -23,11 +24,23 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
     """
     city_query = None
 
+        # 🧠 NLP Preprocessor via GPT
+    parsed = preprocess_with_gpt(prompt_text)
+    print("🤖 GPT preprocessor returned:", parsed)
+
+    city_from_gpt = parsed.get("city")
+    time_context = parsed.get("time_context")  # you’ll use this later for agent stuff
+    intent = parsed.get("intent")
+
     # 1) location override
-    if location:
+    if city_from_gpt:
+        city_query = normalize_city_name(city_from_gpt)
+
+    if location and not city_query:
         lat, lon = location.get("lat"), location.get("lon")
         if lat is not None and lon is not None and not extract_city_from_prompt(prompt_text):
             city_query = reverse_geolocate(lat, lon)
+
 
     # 2) extraction from prompt text
     if not city_query:
@@ -45,4 +58,9 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
         return {"error": "City not found."}
 
     # now call your engine
-    return get_full_weather_summary(city_query, user_prompt=prompt_text, timezone_offset=0)
+    # return get_full_weather_summary(city_query, user_prompt=prompt_text, timezone_offset=0)
+    result = get_full_weather_summary(city_query, user_prompt=prompt_text, timezone_offset=0)
+    result["parsed_prompt"] = parsed  # 🧠 Smart add-on: lets frontend see GPT extraction
+    return result
+
+
