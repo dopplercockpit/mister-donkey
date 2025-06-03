@@ -3,6 +3,7 @@ import re
 from dopplertower_engine import get_full_weather_summary
 from geo_utils_helper import get_geolocation, reverse_geolocate
 from nlpprepro import preprocess_with_gpt
+from agent_dkmanager import check_and_create_agent
 
 def normalize_city_name(city: str) -> str:
     return " ".join(w.capitalize() for w in city.strip().split())
@@ -56,6 +57,11 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
 
     if not city_query:
         return {"error": "City not found."}
+
+    agent_msg = check_and_create_agent(parsed, location, user_id="anon123")
+    if agent_msg:
+        print(agent_msg)  # Or pass it back to frontend later
+
 
     # now call your engine
     # return get_full_weather_summary(city_query, user_prompt=prompt_text, timezone_offset=0)
