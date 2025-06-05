@@ -16,8 +16,12 @@ app = Flask(__name__)
 # If your front-end is at http://localhost:5173, use that. 
 # For broader testing, you can do CORS(app, resources={r"/*": {"origins": "*"}}) for development.
 
-CORS(app, origins=["https://weatherjackass.com"])# This is the original line for COR for production. 
-# Dormant string - CORS(app, origins=["https://www.weatherjackass.com"])
+#modifying because Git is being a cunt
+#Because browsers are dumber than bowser
+CORS(app, origins=[
+    "https://weatherjackass.com",
+    "https://www.weatherjackass.com"
+])
 
 # Register the blueprint from routes.py
 app.register_blueprint(routes_bp)
