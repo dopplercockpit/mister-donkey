@@ -45,7 +45,7 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
             city_query = normalize_city_name(raw)
             print(f"🎯 Found city in prompt: {city_query}")
 
-    if location and (not len(city_query.split()) > 3):
+    if location and (not city_query or len(city_query.split()) > 3):
         print("🔧 Using fallback location from frontend because city_from_prompt is empty or looks invalid")
         city_name = location.get("name")
         if city_name:
