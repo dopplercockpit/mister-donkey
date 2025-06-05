@@ -1,4 +1,4 @@
-firebase-admin>=6.4.0
+firebase-admin
 flask-cors
 flask
 gunicorn

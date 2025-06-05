@@ -31,39 +31,24 @@ def send_push_placeholder(user_id: str, title: str, message: str, data: dict = N
         print(f"❌ send_push_placeholder error: {e}")
         return False
 
-# ─── Firebase Admin (FCM) Implementation ────────────────────────────────────────
+# ── Firebase Admin (FCM) Implementation ─────────────────────────────
 import firebase_admin
 from firebase_admin import credentials, messaging
 
-cred_path = os.getenv("FCM_SERVICE_ACCOUNT_PATH")
-if not cred_path:
-    raise RuntimeError("❌ FCM_SERVICE_ACCOUNT_PATH environment variable not set")
+firebase_admin_json = os.getenv("FIREBASE_ADMIN_JSON")  # ← this should already be in your Render vars
 
-cred = credentials.Certificate(cred_path)
-if not firebase_admin._apps:
-    firebase_admin.initialize_app(cred)
+if not firebase_admin_json:
+    raise RuntimeError("❌ FIREBASE_ADMIN_JSON environment variable not set")
 
-def send_push_firebase(token: str, title: str, body: str):
-    """
-    Send a push notification via Firebase Cloud Messaging.
-    token: the device token (string)
-    title: notification headline
-    body:  notification body text
-    """
-    try:
-        message = messaging.Message(
-            notification=messaging.Notification(
-                title=title,
-                body=body
-            ),
-            token=token
-        )
-        response = messaging.send(message)
-        print("✅ Push sent:", response)
-        return response
-    except Exception as e:
-        print(f"❌ send_push_firebase error: {e}")
-        return None
+try:
+    cred_dict = json.loads(firebase_admin_json)
+    cred = credentials.Certificate(cred_dict)
+
+    # Only initialize if not already done (prevent duplicate init error)
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+except Exception as e:
+    raise RuntimeError(f"🔥 Failed to initialize Firebase Admin SDK: {e}")
 
 # ─── Email‐sending Helper ──────────────────────────────────────────────────────
 def send_email_alert(to_email: str, subject: str, body: str, location: Optional[str] = None) -> bool:
