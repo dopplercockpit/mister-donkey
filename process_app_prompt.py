@@ -23,6 +23,7 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
     3) Fallback: try geocoding the entire prompt
     """
     city_query = None
+    prompt_metadata = {}
 
     # 🧠 NLP Preprocessor via GPT
     parsed = preprocess_with_gpt(prompt_text)
@@ -43,6 +44,20 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
         if raw:
             city_query = normalize_city_name(raw)
             print(f"🎯 Found city in prompt: {city_query}")
+
+    if location and (not len(city_query.split()) > 3):
+        print("🔧 Using fallback location from frontend because city_from_prompt is empty or looks invalid")
+        city_name = location.get("name")
+        if city_name:
+            prompt_metadata["city"] = city_name
+            prompt_metadata["timezone"] = location.get("tz_id")
+            prompt_metadata["lat"] = location.get("lat")
+            prompt_metadata["lon"] = location.get("lon")
+            prompt_metadata["location_used"] = "fallback:frontend_location"
+            city_query = city_name
+            print(f"📍 Fallback city_query from frontend: {city_query}")
+        else:
+            print("⚠️ Location object present but missing 'name'")
 
     # 3) Use passed location coordinates if no explicit city mentioned
     if not city_query and location:
