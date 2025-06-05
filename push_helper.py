@@ -5,7 +5,7 @@ import smtplib
 import os
 import json
 import requests
-from email.mime.text import MimeText
+from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
@@ -89,7 +89,7 @@ def send_email_alert(to_email: str, subject: str, body: str, location: Optional[
         content = body
         if location:
             content = f"Location: {location}\n\n{body}"
-        msg.attach(MimeText(content, "plain"))
+        msg.attach(MIMEText(content, "plain"))
 
         server = smtplib.SMTP(smtp_host, smtp_port)
         server.starttls()
