@@ -86,3 +86,21 @@ def send_email_alert(to_email: str, subject: str, body: str, location: Optional[
     except Exception as e:
         print(f"❌ Failed to send email to {to_email}: {e}")
         return False
+
+def send_push_firebase(title, body, token):
+    """Send FCM push notification to the specified device."""
+    message = messaging.Message(
+        notification=messaging.Notification(
+            title=title,
+            body=body,
+        ),
+        token=token,
+    )
+
+    try:
+        response = messaging.send(message)
+        print(f"✅ FCM push sent! Response: {response}")
+        return response
+    except Exception as e:
+        print(f"❌ Failed to send push notification: {e}")
+        return None
