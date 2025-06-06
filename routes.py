@@ -6,10 +6,13 @@ import json
 import os
 
 from geo_utils_helper import reverse_geolocate
-from process_app_prompt import process_prompt_from_app, extract_city_from_prompt
+from process_app_prompt import process_prompt_from_app #extract_city_from_prompt
 from agent_db import add_agent, get_agents  # If you still want the old “/agents” endpoints
 
+from city_resolver import resolve_city_context
+
 bp = Blueprint("routes", __name__)
+
 
 @bp.route("/", methods=["GET"])
 def home():
@@ -85,8 +88,12 @@ def handle_prompt():
     lat = location.get("lat")
     lon = location.get("lon")
 
-    # If front‐end passed coords but user didn't already type “in City”, append it
-    if lat is not None and lon is not None and not extract_city_from_prompt(user_prompt):
+    # 1) First, let City Resolver see if user already typed “in CITY” or “in ZIPCODE”
+    resolver_result = resolve_city_context(user_prompt, location)
+    resolved_city = resolver_result.get("resolved_city")  # e.g. "Paris" or None
+
+    if lat is not None and lon is not None and not resolved_city:
+        # Only do reverse‐geocode if the user hasn't already said "in Berlin" ourselves.
         city = reverse_geolocate(lat, lon)
         if city:
             if user_prompt:
