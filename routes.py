@@ -175,6 +175,11 @@ def handle_prompt():
     # Print debugging metadata for logs. If you see a 500, grep for "Resolver Debug" in your logs.
     print("🧠 Resolver Debug:", json.dumps(resolver_metadata))
 
+    # If city was resolved but stripped from prompt, put it the fuck back
+    if resolved_city and resolved_city.lower() not in modified_prompt.lower():
+        modified_prompt = f"{modified_prompt} in {resolved_city}"
+        print(f"🔁 Re-injected resolved city into prompt: '{modified_prompt}'")
+
     # 2) If front-end gave us lat/lon but the user didn’t explicitly mention a city (resolved_city is None),
     #    we’ll do reverse geocoding to give a fallback city name and inject it.
     if lat is not None and lon is not None and not resolved_city:
