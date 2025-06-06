@@ -186,13 +186,16 @@ def handle_prompt():
             fallback_city = None
 
         if fallback_city:
-            # If modified_prompt is non-empty, tack on “in {city}”. Otherwise, start fresh with “Weather in {city}”.
-            if modified_prompt:
-                modified_prompt = f"{modified_prompt} in {fallback_city}"
-            else:
-                modified_prompt = f"Weather in {fallback_city}"
-            # Optionally log that we injected a fallback city:
-            print(f"🔄 Injecting fallback city into prompt: '{modified_prompt}'")
+            # Chop off extra fluff like "street, zip, country"
+            clean_city = fallback_city.split(",")[0].strip()
+
+            # Avoid redundant injection if prompt already includes the city name
+            if clean_city.lower() not in modified_prompt.lower():
+                if modified_prompt:
+                    modified_prompt = f"{modified_prompt} in {clean_city}"
+                else:
+                    modified_prompt = f"Weather in {clean_city}"
+                print(f"🔄 Injecting cleaned fallback city into prompt: '{modified_prompt}'")
 
     # 3) If we still have no prompt text (user_prompt was blank and we couldn’t inject anything), return 400.
     if not modified_prompt:
