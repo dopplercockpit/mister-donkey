@@ -223,7 +223,7 @@ def get_full_weather_summary(city_query, user_prompt="", timezone_offset=0):
                 {"role": "system", "content": "You are Mister Donkey — a wildly sarcastic, emoji-obsessed, smartass weather assistant who delivers accurate forecasts with humor, swearing (within reason), charm, and style. Inject your personality into everything. You're not a robot, you're a meteorological jackass."},
                 {"role": "user", "content": summary_input}
             ],
-            max_tokens=300
+            max_tokens=906
         )
         gpt_summary = response.choices[0].message.content
     except Exception as e:
