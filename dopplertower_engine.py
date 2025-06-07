@@ -38,11 +38,23 @@ def search_city_with_weatherapi(query):
     # 1) Try OpenWeather Direct Geocoding (supports state codes, etc.)
     gw_url = (
         f"http://api.openweathermap.org/geo/1.0/direct"
-        f"?q={query}&limit=1&appid={OPENWEATHER_API_KEY}"
+        f"?q={query}&limit=5&appid={OPENWEATHER_API_KEY}"
     )
     r = requests.get(gw_url)
     if r.status_code == 200:
         data = r.json()
+        for c in data:
+            # Filter for US or Canada if it's a US-style location (like "Rock, Michigan")
+            if "country" in c and c["country"] in ["US", "CA"]:
+                return {
+                    "name":       c.get("name"),
+                    "region":     c.get("state", ""),
+                    "country":    c.get("country", ""),
+                    "lat":        c.get("lat"),
+                    "lon":        c.get("lon"),
+                    "full_name":  ", ".join(filter(None, [c.get("name"), c.get("state"), c.get("country")]))
+                }
+        # fallback: just return the first one if nothing matches above
         if data:
             c = data[0]
             return {
