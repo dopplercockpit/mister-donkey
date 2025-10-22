@@ -1,3 +1,5 @@
+# Purpose: collect current, forecast, AQI, alerts, history, 
+    # then synthesize a Mister-Donkey-voice summary via OpenAI.
 # dopplertower_engine.py
 # Main weather engine for Doppler Tower
 
@@ -17,6 +19,9 @@ WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY")
 
 OPENWEATHER_URL = "http://api.openweathermap.org/data/2.5"
 WEATHERAPI_URL = "http://api.weatherapi.com/v1"
+
+
+from config import OPENAI_MODEL  # shared config 
 
 def search_city_with_weatherapi(query):
 #    url = f"{WEATHERAPI_URL}/search.json?key={WEATHERAPI_KEY}&q={query}"
@@ -187,12 +192,18 @@ def parse_weather_alerts(alerts):
 
     return "\n".join(summaries)
 
-def get_full_weather_summary(city_query, user_prompt="", timezone_offset=0):
-    city_info = search_city_with_weatherapi(city_query)
-    if not city_info:
-        return {"error": "City not found."}
+def get_full_weather_summary_by_coords(lat: float, lon: float, display_name: str | None = None, user_prompt: str = "", timezone_offset: int = 0) -> dict:
+    """
+    The 'no bullshit' path: you give me lat/lon, I fetch everything precisely for that point.
+    If display_name is not provided, we can reverse geocode it for a pretty name (optional).
+    """
+    from geo_utils_helper import reverse_geolocate  # local import to avoid circulars
 
-    lat, lon = city_info["lat"], city_info["lon"]
+    # Validate
+    if lat is None or lon is None:
+        return {"error": "Missing coordinates."}
+
+    # Pull data by coords
     current = get_openweather_current(lat, lon)
     forecast = get_openweather_forecast(lat, lon)
     aqi = get_air_quality(lat, lon)
@@ -201,42 +212,85 @@ def get_full_weather_summary(city_query, user_prompt="", timezone_offset=0):
     hist_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
     history = get_historical_weather(lat, lon, hist_date)
 
-    forecast_lines = []
-    if forecast.get("list"):
-        for item in forecast["list"][:3]:
-            dt = datetime.utcfromtimestamp(item["dt"] + timezone_offset).strftime("%Y-%m-%d %H:%M")
-            temp = item.get("main", {}).get("temp", "N/A")
-            desc = item.get("weather", [{}])[0].get("description", "unknown")
-            forecast_lines.append(f"{dt}: {temp}°C, {desc}")
+    # Pretty location name
+    if not display_name:
+        try:
+            display_name = reverse_geolocate(lat, lon)
+        except Exception:
+            display_name = f"{lat:.3f}, {lon:.3f}"
 
-    summary_input = generate_summary_prompt(user_prompt, current, forecast_lines, aqi, alerts)
-
-    alerts_summary_forecast = detect_alert_worthy_changes(current, forecast)
+    # Build text for GPT
+    alerts_summary_forecast = "\n".join(forecast_text) if isinstance(forecast_text, list) else str(forecast_text)
     alerts_summary_severe = parse_weather_alerts({"alert": alerts})
     alerts_summary = "\n".join(filter(None, [alerts_summary_severe, alerts_summary_forecast]))
 
+    summary_input = f"""Location: {display_name}
+Lat/Lon: {lat}, {lon}
+
+Current:
+{current}
+
+Forecast (5-day):
+{forecast}
+
+Air Quality:
+{aqi}
+
+Alerts:
+{alerts}
+
+Recent History (yesterday):
+{history}
+
+User prompt context:
+{user_prompt}
+"""
+
     client = OpenAI(api_key=OPENAI_API_KEY)
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are Mister Donkey — a wildly sarcastic, emoji-obsessed, smartass weather assistant who delivers accurate forecasts with humor, swearing (within reason), charm, and style. Inject your personality into everything. You're not a robot, you're a meteorological jackass."},
-                {"role": "user", "content": summary_input}
-            ],
-            max_tokens=906
-        )
-        gpt_summary = response.choices[0].message.content
-    except Exception as e:
-        gpt_summary = f"GPT error: {str(e)}"
+
+    # ⚠️ model now comes from env (see patch C below)
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,  # <— uses env
+        messages=[
+            {"role": "system", "content": "You are Mister Donkey, a roasted, unfiltered, smartass weather assistant who delivers accurate forecasts."},
+            {"role": "user", "content": summary_input}
+        ],
+        max_tokens=906
+    )
+    gpt_summary = response.choices[0].message.content
 
     return {
-        "city": city_info["full_name"],
+        "location": display_name,
+        "coords": {"lat": lat, "lon": lon},
         "current": current,
         "forecast": forecast,
-        "aqi": aqi,
+        "air_quality": aqi,
         "alerts": alerts,
-        "three_day_forecast": forecast_text,
-        "historical": history,
-        "summary": gpt_summary,
-        "alerts_summary": alerts_summary
+        "history": history,
+        "summary": gpt_summary
     }
+
+
+def get_full_weather_summary_v2(city_query, user_prompt="", timezone_offset=0):
+    """
+    Enhanced version that uses coordinate-based resolution for improved accuracy.
+    """
+    city_info = search_city_with_weatherapi(city_query)
+    if not city_info:
+        return {"error": f"City not found: {city_query}"}
+    
+    lat, lon = city_info["lat"], city_info["lon"]
+    display = city_info.get("full_name") or city_query
+    
+    # Delegate to the coordinate-based function for consistent behavior
+    result = get_full_weather_summary_by_coords(
+        lat, lon, 
+        display_name=display, 
+        user_prompt=user_prompt, 
+        timezone_offset=timezone_offset
+    )
+    
+    # Add any v2-specific fields if needed
+    result["city"] = city_info["full_name"]
+    
+    return result

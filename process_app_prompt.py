@@ -1,3 +1,4 @@
+# Purpose: normalize the prompt + city, then call the engine.
 # Updated process_app_prompt.py with City Resolver integration
 import re
 from dopplertower_engine import get_full_weather_summary
@@ -26,7 +27,7 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
     print(f"🚀 Processing prompt: '{prompt_text}'")
     print(f"📍 Location data: {location}")
     
-    # STEP 0: City Resolver Preprocessing (NEW!)
+    # STEP 0: City Resolver Preprocessing 
     # This happens BEFORE GPT gets to see the prompt
     resolver_result = preprocess_prompt_for_weather(prompt_text, location)
     
@@ -132,12 +133,50 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
         city_query = disambiguated["full_name"] = ", ".join(filter(None, [disambiguated["name"], disambiguated["region"], disambiguated["country"]]))
         print(f"🏆 Disambiguated to: {city_query}")
 
-    # Get weather data using the resolved city
-    result = get_full_weather_summary(
-        city_query, 
-        user_prompt=processed_prompt,  # Use the processed prompt for context
-        timezone_offset=0
-    )
+    # INSERT replacement (keep the old block commented with "# removed" if you prefer)
+    final_lat = None
+    final_lon = None
+    display_name = None
+
+    # 1) If the resolver picked a specific city that's different from device location, geocode it
+    if resolved_city_from_resolver:
+        try:
+            from dopplertower_engine import search_city_with_weatherapi
+            info = search_city_with_weatherapi(resolved_city_from_resolver)
+            if info and info.get("lat") is not None and info.get("lon") is not None:
+                final_lat = info["lat"]
+                final_lon = info["lon"]
+                display_name = info.get("full_name") or resolved_city_from_resolver
+        except Exception as e:
+            print(f"⚠️ Geocode of resolver city failed: {e}")
+
+    # 2) Otherwise, use the frontend coordinates if present
+    if (final_lat is None or final_lon is None) and location:
+        try:
+            lat = location.get("lat")
+            lon = location.get("lon")
+            if lat is not None and lon is not None:
+                final_lat = float(lat)
+                final_lon = float(lon)
+                display_name = location.get("name")
+        except Exception as e:
+            print(f"⚠️ Frontend coords invalid: {e}")
+
+    # 3) If we still have nothing, fall back to city string
+    if final_lat is not None and final_lon is not None:
+        from dopplertower_engine import get_full_weather_summary_by_coords
+        result = get_full_weather_summary_by_coords(
+            final_lat, final_lon, display_name=display_name, user_prompt=processed_prompt, timezone_offset=0
+        )
+    else:
+        # last resort: string-based resolution
+        result = get_full_weather_summary(
+            city_query if city_query else (location.get("name") if location else None),
+            user_prompt=processed_prompt,
+            timezone_offset=0
+        )
+
+    # Removed the old direct call to get_full_weather_summary(city_query...)  # removed
     
     # Add debugging information to the result
     result["parsed_prompt"] = parsed
@@ -146,5 +185,17 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
     result["original_prompt"] = prompt_text
     result["processed_prompt"] = processed_prompt
     
+    # ADD a stable diagnostics object that exists for BOTH manual and auto flows
+    result["diagnostics"] = {
+        "original_prompt": prompt_text,
+        "processed_prompt": processed_prompt,
+        "chosen_city_string": city_query,
+        "final_coords": {"lat": final_lat, "lon": final_lon},
+        "display_name": display_name,
+        "city_resolver": resolver_result,
+        "prompt_metadata": prompt_metadata,
+    }
+
+
     return result
 

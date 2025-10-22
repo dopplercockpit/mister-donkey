@@ -1,8 +1,11 @@
+# Purpose: use GPT as a parser to extract structure from messy user text (city, time, intent). 
+#   This shows “GPT beyond chat”.
+
 import os
 import json
 from openai import OpenAI
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+from config import OPENAI_API_KEY, OPENAI_MODEL
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 def preprocess_with_gpt(prompt_text: str) -> dict:

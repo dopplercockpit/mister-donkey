@@ -1,3 +1,4 @@
+# Purpose: accept JSON, pass to the processor, return a JSON response.
 # Updated routes.py with auto-loading support
 from flask import Blueprint, request, jsonify
 from flask_cors import cross_origin
@@ -88,18 +89,26 @@ def handle_prompt():
     
     Handles both manual prompts and auto-loading requests.
     Auto-loading is triggered by { "auto": true } in the request body.
+    Debug output is enabled by { "debug": true } or auto-loading.
     """
     data = request.get_json() or {}
     user_prompt = (data.get("prompt") or "").strip()
     location = data.get("location") or {}
-    is_auto_request = data.get("auto", False)  # NEW: Check for auto flag
-    
+    is_auto_request = data.get("auto", False)
+    debug_requested = bool(data.get("debug", False))
+
+    # Extract location data early
     lat = location.get("lat")
     lon = location.get("lon")
 
-    # Enhanced logging for auto requests
-    if is_auto_request:
-        print(f"🤖 Auto-loading request received with location: {location}")
+    # Enhanced debug logging
+    if debug_requested or is_auto_request:
+        print(f"\n🔍 Debug enabled: auto={is_auto_request}, debug={debug_requested}")
+        print(f"📝 Input prompt: '{user_prompt}'")
+        print(f"📍 Location data: {json.dumps(location)}")
+        if lat is not None and lon is not None:
+            print(f"📍 Coordinates: {lat}, {lon}")
+        print("-" * 50)
     
     # 1) City Resolver: Preprocess user prompt
     try:
@@ -153,7 +162,18 @@ def handle_prompt():
     try:
         result = process_prompt_from_app(modified_prompt, location=location)
         
-        # Add auto-loading metadata to the result
+        # Ensure debug flag is set if either condition is true
+        if debug_requested or is_auto_request:
+            result["debug"] = True
+            result["debug_info"] = {
+                "auto_request": is_auto_request,
+                "debug_requested": debug_requested,
+                "original_prompt": user_prompt,
+                "modified_prompt": modified_prompt,
+                "resolver_metadata": resolver_metadata
+            }
+        
+        # Add auto-loading metadata
         if is_auto_request:
             result["auto_loaded"] = True
             result["auto_prompt"] = modified_prompt
@@ -162,8 +182,14 @@ def handle_prompt():
         return jsonify(result)
     except Exception as ex:
         error_msg = str(ex)
+        debug_info = {
+            "error": error_msg,
+            "trace": repr(ex),
+            "debug_enabled": debug_requested or is_auto_request
+        }
+        
         if is_auto_request:
             print(f"🛑 Auto-load failed: {error_msg}")
             error_msg = f"Auto-loading failed: {error_msg}"
         
-        return jsonify({"error": error_msg, "trace": repr(ex)}), 500
+        return jsonify({"error": error_msg, "debug_info": debug_info}), 500

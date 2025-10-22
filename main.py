@@ -5,7 +5,7 @@ from dotenv import load_dotenv  # <-- 1) import
 from routes import bp as routes_bp
 from threading import Thread
 from weather_agent import monitor_all_sessions_loop
-
+from weather_agent import weather_agent_bp
 
 # 2) load .env
 load_dotenv()
@@ -24,12 +24,14 @@ CORS(app, resources={r"/*": {"origins": [
 
 # Register the blueprint from routes.py
 app.register_blueprint(routes_bp)
+app.register_blueprint(weather_agent_bp, url_prefix="/weather")
+
+if os.getenv("START_WEATHER_MONITOR", "").lower() == "true":
+    from threading import Thread
+    from weather_agent import monitor_all_sessions_loop
+    agent_thread = Thread(target=monitor_all_sessions_loop, daemon=True)
+    agent_thread.start()
 
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 5000))
-    # Launch the WeatherAgent monitoring loop as a background daemon
-    from weather_agent import weather_agent_bp, monitor_all_sessions_loop
-    app.register_blueprint(weather_agent_bp, url_prefix="/weather")
-    agent_thread = Thread(target=monitor_all_sessions_loop, daemon=True)
-    agent_thread.start()
     app.run(debug=False, host="0.0.0.0", port=PORT)

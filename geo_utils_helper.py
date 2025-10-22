@@ -1,3 +1,4 @@
+# Purpose: turn GPS into “City, Region, Country”. Uses WeatherAPI as a robust fallback.
 # REV_geo_utils_helper.py
 # Geolocation utility functions helper for Doppler Tower
 # Utility functions for geolocation via OpenCage
