@@ -25,7 +25,7 @@ def preprocess_with_gpt(prompt_text: str) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt_text}
