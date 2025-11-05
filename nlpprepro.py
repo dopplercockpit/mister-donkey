@@ -1,11 +1,12 @@
+# nlpprepro.py (PATCHED VERSION)
 # Purpose: use GPT as a parser to extract structure from messy user text (city, time, intent). 
-#   This shows “GPT beyond chat”.
+# FIX: Now uses OPENAI_MODEL from config instead of hardcoded "gpt-4o-mini"
 
 import os
 import json
 from openai import OpenAI
 
-from config import OPENAI_API_KEY, OPENAI_MODEL
+from config import OPENAI_API_KEY, OPENAI_MODEL  # ← Added OPENAI_MODEL
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 def preprocess_with_gpt(prompt_text: str) -> dict:
@@ -25,7 +26,7 @@ def preprocess_with_gpt(prompt_text: str) -> dict:
 
     try:
         response = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=OPENAI_MODEL,  # ← FIXED: Now uses env variable instead of hardcoded
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt_text}

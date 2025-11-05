@@ -1,5 +1,6 @@
 # Purpose: accept JSON, pass to the processor, return a JSON response.
 # Updated routes.py with auto-loading support
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_cors import cross_origin
 
@@ -81,6 +82,8 @@ def add_or_update_agent():
     except Exception as ex:
         return jsonify({"error": f"Failed to save agent: {str(ex)}"}), 500
 
+import traceback
+
 @bp.route("/prompt", methods=["POST"])
 @cross_origin()
 def handle_prompt():
@@ -114,7 +117,17 @@ def handle_prompt():
     try:
         modified_prompt, resolved_city, resolver_metadata = resolve_city_context(user_prompt, location)
     except Exception as ex:
-        return jsonify({"error": f"City resolution failed: {str(ex)}"}), 500
+        # Log full traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ ERROR in /prompt:\n{error_trace}")
+        
+        # Return detailed error to frontend
+        return jsonify({
+            "error": str(ex),
+            "error_type": type(ex).__name__,
+            "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
     # Enhanced debugging for auto requests
     if is_auto_request:
