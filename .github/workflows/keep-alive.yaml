@@ -1,0 +1,108 @@
+# .github/workflows/keep-alive.yaml
+# Purpose: ping your Render backend on a schedule so it stays warm.
+# Works if you give only the origin (https://example.onrender.com)
+# OR a full path (https://example.onrender.com/health) in the secret.
+
+name: Keep Render Backend Alive
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # every 10 minutes (UTC)
+  workflow_dispatch:        # manual run from Actions tab
+
+# Least privilege; this job doesn't need repo perms
+permissions: {}
+
+# Don't stack pings if one happens to run long
+concurrency:
+  group: keep-render-backend-alive
+  cancel-in-progress: false
+
+jobs:
+  ping-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      # Set this in: Settings → Secrets and variables → Actions → New repository secret
+      # Name: BACKEND_URL, Value: https://mister-donkey.onrender.com  (or your /health path)
+      BACKEND_URL: ${{ secrets.BACKEND_URL }}
+
+    steps:
+      - name: Resolve target URL
+        id: resolve
+        shell: bash
+        run: |
+          echo "🏓 Mister Donkey keep-alive is starting…"
+
+          # 1) Default if secret is missing
+          if [ -z "${BACKEND_URL}" ]; then
+            BACKEND_URL="https://mister-donkey.onrender.com"
+            echo "ℹ️ No BACKEND_URL secret set; using default: $BACKEND_URL"
+          else
+            echo "ℹ️ Using BACKEND_URL from secret (redacted)"
+          fi
+
+          # 2) Ensure it has a scheme
+          if [[ "$BACKEND_URL" != http*://* ]]; then
+            BACKEND_URL="https://${BACKEND_URL}"
+          fi
+
+          # 3) Build a safe ping URL:
+          #    If a path already exists (…/health or …/ping), use it as-is.
+          #    Otherwise append /health. Strip any trailing slash first.
+          if echo "$BACKEND_URL" | grep -qE "https?://.*/.+$"; then
+            PING_URL="$BACKEND_URL"
+          else
+            PING_URL="${BACKEND_URL%/}/health"
+          fi
+
+          echo "🔗 Target: $PING_URL"
+          echo "PING_URL=$PING_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Curl ping (with retry)
+        shell: bash
+        run: |
+          PING_URL='${{ steps.resolve.outputs.PING_URL }}'
+
+          attempt() {
+            # -f: fail on >=400 (but we capture code manually)
+            # -sS: quiet but show errors
+            # -o /dev/null: discard body
+            # -w "%{http_code}": only emit status code
+            # --max-time 25: keep it snappy
+            curl -A 'mister-donkey-keepalive/1.0' -fsS -o /dev/null -w "%{http_code}" \
+                 --max-time 25 "$PING_URL" || true
+          }
+
+          code=$(attempt)
+          echo "HTTP $code"
+
+          # Treat 2xx/3xx as success. 404 means server is awake but route not found—good enough.
+          if { [ "${code:-0}" -ge 200 ] && [ "${code:-0}" -lt 400 ]; } || [ "${code:-0}" -eq 404 ]; then
+            echo "✅ Backend is alive."
+            exit 0
+          fi
+
+          echo "⏳ Not ready (HTTP ${code:-0}). Sleeping 30s then retry…"
+          sleep 30
+
+          code=$(attempt)
+          echo "HTTP $code (retry)"
+
+          if { [ "${code:-0}" -ge 200 ] && [ "${code:-0}" -lt 400 ]; } || [ "${code:-0}" -eq 404 ]; then
+            echo "✅ Backend responded on retry."
+            exit 0
+          fi
+
+          echo "❌ Backend still not responding."
+          exit 1
+
+      - name: Log success
+        if: success()
+        run: echo "📊 Keep-alive success at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+      - name: Log failure
+        if: failure()
+        run: |
+          echo "🚨 Keep-alive failed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "Double-check your BACKEND_URL and that the service is reachable."
