@@ -294,3 +294,159 @@ def get_full_weather_summary_v2(city_query, user_prompt="", timezone_offset=0):
     result["city"] = city_info["full_name"]
     
     return result
+
+# Add to dopplertower_engine.py
+PERSONALITY_MODES = {
+    "donkey": {
+        "name": "Mister Donkey (Original)",
+        "system_prompt": "You're Mister Donkey, a sarcastic, emoji-loving, profanity-capable weather assistant...",
+        "temperature": 0.9
+    },
+    "professional": {
+        "name": "Professional Meteorologist",
+        "system_prompt": "You are a professional meteorologist providing accurate, concise weather forecasts...",
+        "temperature": 0.3
+    },
+    "friendly": {
+        "name": "Friendly Neighbor",
+        "system_prompt": "You're a friendly, helpful weather assistant who's excited to help people plan their day...",
+        "temperature": 0.7
+    },
+    "pirate": {
+        "name": "Captain Weather",
+        "system_prompt": "Yarr! Ye be a pirate weather forecaster, speakin' in pirate tongue about the seas and skies...",
+        "temperature": 0.9
+    },
+    "haiku": {
+        "name": "Weather Poet",
+        "system_prompt": "You respond ONLY in haiku format (5-7-5 syllables). Make weather beautiful and poetic...",
+        "temperature": 0.8
+    }
+}
+
+def generate_summary_with_personality(mode="donkey", ...):
+    personality = PERSONALITY_MODES.get(mode, PERSONALITY_MODES["donkey"])
+    
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": personality["system_prompt"]},
+            {"role": "user", "content": summary_input}
+        ],
+        temperature=personality["temperature"],
+        max_tokens=906
+    )
+    return response.choices[0].message.content
+
+# Add to dopplertower_engine.py
+from PIL import Image, ImageDraw, ImageFont
+import io
+import base64
+
+def generate_weather_card(weather_data):
+    """Generate a shareable weather card image"""
+    # Create image
+    img = Image.new('RGB', (800, 600), color=(135, 206, 235))  # Sky blue
+    draw = ImageDraw.Draw(img)
+    
+    # Add weather emoji/icon at top
+    temp = weather_data.get("current", {}).get("main", {}).get("temp")
+    condition = weather_data.get("current", {}).get("weather", [{}])[0].get("main", "")
+    
+    # Draw temperature
+    font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 120)
+    draw.text((400, 150), f"{int(temp)}°", fill="white", font=font_large, anchor="mm")
+    
+    # Draw condition
+    font_med = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 40)
+    draw.text((400, 280), condition, fill="white", font=font_med, anchor="mm")
+    
+    # Draw location
+    location = weather_data.get("location", "Unknown")
+    draw.text((400, 350), location, fill="white", font=font_med, anchor="mm")
+    
+    # Convert to base64 for API response
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    img_str = base64.b64encode(buffer.getvalue()).decode()
+    
+    return f"data:image/png;base64,{img_str}"
+
+# Add to routes.py
+@bp.route("/weather-card", methods=["POST"])
+def generate_card():
+    data = request.get_json()
+    weather = process_prompt_from_app(data.get("prompt"), data.get("location"))
+    
+    card_image = generate_weather_card(weather)
+    
+    return jsonify({
+        "weather": weather,
+        "card": card_image,
+        "share_url": f"https://weatherjackass.com/share/{hash(str(weather))}"
+    })
+
+def generate_outfit_recommendation(weather_data):
+    """AI-powered clothing recommendations based on weather"""
+    temp = weather_data.get("current", {}).get("main", {}).get("temp")
+    feels_like = weather_data.get("current", {}).get("main", {}).get("feels_like")
+    condition = weather_data.get("current", {}).get("weather", [{}])[0].get("main", "")
+    wind_speed = weather_data.get("current", {}).get("wind", {}).get("speed", 0)
+    
+    prompt = f"""
+    Based on this weather, recommend what to wear:
+    - Temperature: {temp}°C (feels like {feels_like}°C)
+    - Conditions: {condition}
+    - Wind: {wind_speed} m/s
+    
+    Give practical clothing advice in Mister Donkey's sarcastic style.
+    Include: base layer, outer layer, accessories, footwear.
+    """
+    
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": "You're Mister Donkey giving fashion advice based on weather"},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=400
+    )
+    
+    return response.choices[0].message.content
+
+# Add to existing weather response
+result["outfit_recommendation"] = generate_outfit_recommendation(result)
+
+@bp.route("/historical", methods=["POST"])
+def historical_weather():
+    data = request.get_json()
+    date = data.get("date")  # Format: "2024-01-15"
+    location = data.get("location")
+    
+    lat, lon = location.get("lat"), location.get("lon")
+    hist_weather = get_historical_weather(lat, lon, date)
+    
+    # Generate narrative
+    prompt = f"""
+    Tell a story about the weather on {date}.
+    Weather data: {hist_weather}
+    
+    Make it nostalgic and interesting. What was happening that day?
+    """
+    
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": "You're Mister Donkey telling weather stories"},
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=600
+    )
+    
+    return jsonify({
+        "date": date,
+        "weather": hist_weather,
+        "story": response.choices[0].message.content
+    })

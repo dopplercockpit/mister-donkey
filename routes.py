@@ -206,3 +206,95 @@ def handle_prompt():
             error_msg = f"Auto-loading failed: {error_msg}"
         
         return jsonify({"error": error_msg, "debug_info": debug_info}), 500
+    
+    # Add to routes.py
+from functools import lru_cache
+
+# Simple in-memory cache (upgrade to Redis for production)
+location_cache = {}
+
+@bp.route("/locations/save", methods=["POST"])
+def save_location():
+    data = request.get_json()
+    user_id = data.get("user_id") or request.headers.get("X-Device-ID")
+    location = data.get("location")
+    
+    location_cache[user_id] = {
+        "location": location,
+        "saved_at": datetime.now().isoformat(),
+        "use_count": location_cache.get(user_id, {}).get("use_count", 0) + 1
+    }
+    
+    return jsonify({"status": "saved", "location": location})
+
+@bp.route("/locations/get", methods=["GET"])
+def get_saved_location():
+    user_id = request.args.get("user_id") or request.headers.get("X-Device-ID")
+    cached = location_cache.get(user_id)
+    
+    if cached:
+        return jsonify(cached)
+    return jsonify({"error": "No saved location"}), 404
+
+@bp.route("/compare", methods=["POST"])
+def compare_weather():
+    data = request.get_json()
+    city1 = data.get("city1")
+    city2 = data.get("city2")
+    
+    weather1 = process_prompt_from_app(f"weather in {city1}", None)
+    weather2 = process_prompt_from_app(f"weather in {city2}", None)
+    
+    # Generate comparison summary with GPT
+    comparison_prompt = f"""
+    Compare the weather between {city1} and {city2}.
+    
+    {city1}: {weather1.get('summary')}
+    {city2}: {weather2.get('summary')}
+    
+    Give a cheeky comparison highlighting the biggest differences.
+    """
+    
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    response = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": "You're Mister Donkey comparing weather between cities"},
+            {"role": "user", "content": comparison_prompt}
+        ],
+        max_tokens=500
+    )
+    
+    return jsonify({
+        "city1": weather1,
+        "city2": weather2,
+        "comparison": response.choices[0].message.content
+    })
+
+# Add to routes.py
+import redis
+from datetime import datetime
+
+# Initialize Redis (or use SQLite for simpler version)
+r = redis.Redis(host='localhost', port=6379, db=0)
+
+@bp.route("/prompt", methods=["POST"])
+def handle_prompt():
+    # Track usage
+    key = f"usage:{datetime.now().strftime('%Y-%m-%d')}"
+    r.incr(key)
+    r.expire(key, 86400 * 30)  # Keep 30 days
+    
+    # ... rest of code
+
+@bp.route("/analytics", methods=["GET"])
+def get_analytics():
+    # Get usage stats
+    today = datetime.now().strftime('%Y-%m-%d')
+    usage_today = r.get(f"usage:{today}") or 0
+    
+    return jsonify({
+        "requests_today": int(usage_today),
+        "top_cities": [...],
+        "avg_response_time": ...
+    })
