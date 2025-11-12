@@ -14,6 +14,7 @@ from routes import bp as routes_bp
 from threading import Thread
 from weather_agent import monitor_all_sessions_loop
 from weather_agent import weather_agent_bp
+from conversation_manager import conversation_manager
 
 # Load .env
 load_dotenv()

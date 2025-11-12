@@ -1,5 +1,5 @@
-# improved_location_resolver.py
-# Fixes the "random Africa location" bug by implementing strict coordinate validation
+# improved_location_resolver.py (FIXED VERSION)
+# Fixes: Explicit city mentions now ALWAYS override geolocation
 
 from typing import Dict, Optional, Tuple
 from geo_utils_helper import reverse_geolocate, calculate_distance, is_valid_coordinates
@@ -7,17 +7,21 @@ from geo_utils_helper import reverse_geolocate, calculate_distance, is_valid_coo
 def resolve_location_safely(
     user_prompt: str,
     resolved_city: Optional[str],
-    location: Optional[Dict]
+    location: Optional[Dict],
+    force_explicit_city: bool = True  # NEW: Default to prioritizing explicit cities
 ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
     """
     Safely resolve location with strict validation to prevent wrong coordinates.
     
     Returns: (lat, lon, display_name)
     
-    Priority:
-    1. If user explicitly mentions a city ("weather in Paris"), geocode that city
-    2. If frontend provides coordinates, use those (user's actual location)
+    Priority (FIXED - Issue #1):
+    1. **ALWAYS prioritize explicit city mentions in prompt** ("weather in Paris")
+    2. Only use frontend coordinates if NO city is explicitly mentioned
     3. Never mix frontend coords with a different city name
+    
+    New parameter:
+    - force_explicit_city: If True (default), explicit city ALWAYS wins over geolocation
     """
     
     # Extract frontend coordinates if available
@@ -42,9 +46,10 @@ def resolve_location_safely(
             frontend_lat = None
             frontend_lon = None
     
-    # CASE 1: User explicitly mentioned a city (e.g., "weather in Tokyo")
-    if resolved_city:
-        print(f"🎯 User explicitly requested: {resolved_city}")
+    # CASE 1: User explicitly mentioned a city (e.g., "weather in Detroit")
+    # THIS NOW HAS ABSOLUTE PRIORITY - FIXES THE MAIN BUG
+    if resolved_city and force_explicit_city:
+        print(f"🎯 EXPLICIT CITY DETECTED: '{resolved_city}' - OVERRIDING geolocation!")
         
         # Geocode the requested city
         try:
@@ -58,14 +63,12 @@ def resolve_location_safely(
                 
                 # Validate the geocoded coordinates
                 if is_valid_coordinates(city_lat, city_lon):
-                    # If we have frontend coords, verify they're reasonably close
-                    # (user might be traveling and asking about home)
+                    # Optional: Log distance from user if we have their location
                     if frontend_lat is not None and frontend_lon is not None:
                         distance = calculate_distance(frontend_lat, frontend_lon, city_lat, city_lon)
-                        if distance > 1000:  # More than 1000km apart
-                            print(f"⚠️ User is {distance:.0f}km from requested city. Using requested city anyway.")
+                        print(f"ℹ️ User is {distance:.0f}km from requested city (using requested city anyway)")
                     
-                    print(f"✅ Resolved explicit city: {city_display} at {city_lat}, {city_lon}")
+                    print(f"✅ Using explicit city: {city_display} at {city_lat}, {city_lon}")
                     return city_lat, city_lon, city_display
                 else:
                     print(f"❌ Geocoded coordinates for '{resolved_city}' are invalid")
@@ -75,7 +78,7 @@ def resolve_location_safely(
     
     # CASE 2: No explicit city, use frontend coordinates (user's actual location)
     if frontend_lat is not None and frontend_lon is not None:
-        print(f"📍 Using frontend coordinates: {frontend_lat}, {frontend_lon}")
+        print(f"📍 No explicit city - using frontend coordinates: {frontend_lat}, {frontend_lon}")
         
         # Get a human-readable name for these coordinates
         display_name = frontend_name

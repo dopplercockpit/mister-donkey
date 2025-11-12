@@ -1,6 +1,5 @@
 # dopplertower_engine.py (FIXED VERSION)
-# Purpose: collect current, forecast, AQI, alerts, history, 
-# then synthesize a Mister-Donkey-voice summary via OpenAI.
+# Fixes: Added tone selector functionality (Issue #2)
 
 import requests
 from datetime import datetime, timedelta, timezone
@@ -18,6 +17,42 @@ OPENWEATHER_URL = "http://api.openweathermap.org/data/2.5"
 WEATHERAPI_URL = "http://api.weatherapi.com/v1"
 
 from config import OPENAI_MODEL  # shared config 
+
+# NEW: Tone definitions for personality selector
+TONE_PRESETS = {
+    "sarcastic": {
+        "system_prompt": "You're Mister Donkey, a brutally sarcastic, emoji-loving, profanity-capable weather assistant who delivers accurate forecasts with maximum snark and sass. You roast people for asking obvious questions, make fun of weather conditions, and don't hold back. Use emojis liberally 🙄💀🌧️☀️",
+        "style": "sarcastic, snarky, roasting"
+    },
+    "pirate": {
+        "system_prompt": "You're Mister Donkey, a swashbuckling pirate weather captain who delivers forecasts in pirate speak. Use 'arr', 'matey', 'ye', 'aye', talk about the seven seas, storms on the horizon, and treasure (sunshine). Use maritime and pirate emojis 🏴‍☠️⚓🌊⛵",
+        "style": "pirate speak, maritime references"
+    },
+    "professional": {
+        "system_prompt": "You're Mister Donkey, a professional meteorologist who delivers accurate, clear weather forecasts with occasional witty observations. You're informative, helpful, and slightly playful. Use weather emojis appropriately 🌡️📊☁️",
+        "style": "professional, informative, helpful"
+    },
+    "hippie": {
+        "system_prompt": "You're Mister Donkey, a laid-back hippie weather guru who sees weather as cosmic energy and natural vibes. You use phrases like 'far out', 'groovy', 'cosmic', reference Mother Nature, the universe, good vibes, and peace. Use chill emojis ☮️🌈✌️🌻",
+        "style": "hippie, cosmic, peaceful"
+    },
+    "drill_sergeant": {
+        "system_prompt": "You're Mister Donkey, a hard-ass drill sergeant delivering weather briefings like military orders. You're tough, no-nonsense, yell in ALL CAPS sometimes, and treat weather preparation like a military operation. Use military emojis 💪🎖️⚠️",
+        "style": "military, commanding, tough"
+    },
+    "gen_z": {
+        "system_prompt": "You're Mister Donkey, a Gen Z weather assistant who speaks in current slang, references memes, uses 'bestie', 'fr fr', 'no cap', 'slay', 'vibe check', etc. You're chronically online and relate everything to TikTok trends. Heavy emoji usage 💅✨🔥",
+        "style": "Gen Z slang, memes, internet culture"
+    },
+    "noir_detective": {
+        "system_prompt": "You're Mister Donkey, a 1940s noir detective who delivers weather reports like you're investigating a crime scene. Use noir phrases, talk about shadows, mysteries, and weather 'clues'. Dark and moody. Use detective emojis 🕵️🌃🚬",
+        "style": "noir detective, mysterious, dramatic"
+    },
+    "shakespeare": {
+        "system_prompt": "You're Mister Donkey, delivering weather forecasts in Shakespearean English. Use thee, thou, art, wherefore, hath, etc. Make weather sound like poetry or tragedy. Use classical emojis 🎭📜✨",
+        "style": "Shakespearean, poetic, dramatic"
+    }
+}
 
 def search_city_with_weatherapi(query):
     """
@@ -119,14 +154,15 @@ def get_historical_weather(lat, lon, date_str):
     response = requests.get(url)
     return response.json()
 
-def generate_summary_prompt(user_prompt, current, forecast_lines, aqi, alerts):
+def generate_summary_prompt(user_prompt, current, forecast_lines, aqi, alerts, tone="sarcastic"):
+    """
+    NEW: Now supports tone parameter!
+    """
+    tone_config = TONE_PRESETS.get(tone, TONE_PRESETS["sarcastic"])
     current_main = current.get("main", {})
+    
     return (
-        f"You're Mister Donkey, a sarcastic, emoji-loving, profanity-capable weather assistant "
-        f"who delivers helpful and accurate forecasts with a wild sense of humor, swagger, and grit. "
-        f"You're cheeky but kind, and you don't talk like a robot. Always inject personality, "
-        f"slang, dark humor, and plenty of weather-relevant emojis like 🌧️❄️☀️💨🌪️🌈.\n\n"
-
+        f"{tone_config['system_prompt']}\n\n"
         f"User prompt: {user_prompt}\n"
         f"Current: {current_main.get('temp')}°C, feels like {current_main.get('feels_like')}°C\n"
         f"Conditions: {current.get('weather',[{}])[0].get('description','')}\n"
@@ -134,7 +170,8 @@ def generate_summary_prompt(user_prompt, current, forecast_lines, aqi, alerts):
         f"AQI: {aqi}\n"
         f"Forecast: {'; '.join(forecast_lines)}\n"
         f"Alerts: {len(alerts)} active\n"
-        f"Always end with a short piece of sarcastic advice or comment, in your voice.\n"
+        f"Deliver your response in the style: {tone_config['style']}\n"
+        f"End with your signature sign-off for this personality.\n"
     )
 
 
@@ -176,12 +213,20 @@ def parse_weather_alerts(alerts):
 
     return "\n".join(summaries)
 
-def get_full_weather_summary_by_coords(lat: float, lon: float, display_name: str = None, user_prompt: str = "", timezone_offset: int = 0) -> dict:
+def get_full_weather_summary_by_coords(
+    lat: float, 
+    lon: float, 
+    display_name: str = None, 
+    user_prompt: str = "", 
+    timezone_offset: int = 0,
+    tone: str = "sarcastic",  # NEW: Tone parameter
+    conversation_history: list = None  # NEW: For conversation continuity
+) -> dict:
     """
     The 'no bullshit' path: you give me lat/lon, I fetch everything precisely for that point.
-    If display_name is not provided, we can reverse geocode it for a pretty name (optional).
+    NEW: Supports tone selection and conversation history!
     """
-    from geo_utils_helper import reverse_geolocate  # local import to avoid circulars
+    from geo_utils_helper import reverse_geolocate
 
     # Validate
     if lat is None or lon is None:
@@ -232,13 +277,24 @@ User prompt context:
 
     client = OpenAI(api_key=OPENAI_API_KEY)
 
-    # Uses OPENAI_MODEL from config
+    # Get tone configuration
+    tone_config = TONE_PRESETS.get(tone, TONE_PRESETS["sarcastic"])
+    
+    # Build messages with conversation history if provided
+    messages = [
+        {"role": "system", "content": tone_config["system_prompt"]}
+    ]
+    
+    # Add conversation history if it exists
+    if conversation_history:
+        messages.extend(conversation_history)
+    
+    # Add current request
+    messages.append({"role": "user", "content": summary_input})
+
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": "You are Mister Donkey, a roasted, unfiltered, smartass weather assistant who delivers accurate forecasts."},
-            {"role": "user", "content": summary_input}
-        ],
+        messages=messages,
         max_tokens=906
     )
     gpt_summary = response.choices[0].message.content
@@ -251,11 +307,18 @@ User prompt context:
         "air_quality": aqi,
         "alerts": alerts,
         "history": history,
-        "summary": gpt_summary
+        "summary": gpt_summary,
+        "tone": tone  # Return the tone that was used
     }
 
 
-def get_full_weather_summary(city_query, user_prompt="", timezone_offset=0):
+def get_full_weather_summary(
+    city_query, 
+    user_prompt="", 
+    timezone_offset=0, 
+    tone="sarcastic",  # NEW
+    conversation_history=None  # NEW
+):
     """
     Legacy function - redirects to coordinate-based version for consistency.
     """
@@ -271,10 +334,24 @@ def get_full_weather_summary(city_query, user_prompt="", timezone_offset=0):
         lat, lon, 
         display_name=display, 
         user_prompt=user_prompt, 
-        timezone_offset=timezone_offset
+        timezone_offset=timezone_offset,
+        tone=tone,  # Pass tone through
+        conversation_history=conversation_history  # Pass conversation through
     )
     
     # Add city info
     result["city"] = city_info["full_name"]
     
     return result
+
+
+# NEW: Helper function to get available tones
+def get_available_tones():
+    """Returns list of available tone presets with descriptions"""
+    return {
+        key: {
+            "name": key.replace("_", " ").title(),
+            "description": config["system_prompt"][:100] + "..."
+        }
+        for key, config in TONE_PRESETS.items()
+    }

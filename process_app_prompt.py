@@ -1,8 +1,8 @@
-# process_app_prompt.py (PATCHED VERSION)
-# Fixes: Location accuracy, prevents "random Africa" bug
+# process_app_prompt.py (UPDATED VERSION)
+# Fixes: Supports tone selection and conversation history
 
 import re
-from dopplertower_engine import get_full_weather_summary, get_full_weather_summary_by_coords
+from dopplertower_engine_fixed import get_full_weather_summary, get_full_weather_summary_by_coords
 from geo_utils_helper import get_geolocation, reverse_geolocate
 from nlpprepro import preprocess_with_gpt
 from agent_dkmanager import check_and_create_agent
@@ -12,13 +12,24 @@ from improved_location_resolver import resolve_location_safely, validate_weather
 def normalize_city_name(city: str) -> str:
     return " ".join(w.capitalize() for w in city.strip().split())
 
-def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> dict:
+def process_prompt_from_app(
+    prompt_text: str, 
+    location: dict | None = None,
+    tone: str = "sarcastic",  # NEW
+    conversation_history: list = None  # NEW
+) -> dict:
     """
-    Enhanced prompt processor with strict location validation.
-    FIXES: Random Africa coordinates bug.
+    Enhanced prompt processor with tone selection and conversation continuity.
+    
+    NEW Parameters:
+    - tone: Personality tone for the response (sarcastic, pirate, professional, etc.)
+    - conversation_history: Previous messages in the conversation
     """
     print(f"🚀 Processing prompt: '{prompt_text}'")
     print(f"📍 Location data: {location}")
+    print(f"🎭 Tone: {tone}")
+    if conversation_history:
+        print(f"💬 Conversation history: {len(conversation_history)} messages")
     
     # STEP 0: City Resolver Preprocessing
     resolver_result = preprocess_prompt_for_weather(prompt_text, location)
@@ -37,11 +48,12 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
     parsed = preprocess_with_gpt(processed_prompt)
     print("🤖 GPT preprocessor returned:", parsed)
 
-    # STEP 2: Safely resolve location (NEW - prevents Africa bug)
+    # STEP 2: Safely resolve location (with explicit city priority)
     final_lat, final_lon, display_name = resolve_location_safely(
         user_prompt=prompt_text,
         resolved_city=resolved_city_from_resolver,
-        location=location
+        location=location,
+        force_explicit_city=True  # ALWAYS prioritize explicit cities
     )
     
     # If we couldn't resolve location, return error
@@ -57,13 +69,15 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
     
     print(f"🌍 Final resolved location: {display_name} at {final_lat}, {final_lon}")
     
-    # STEP 3: Get weather using coordinates (most reliable method)
+    # STEP 3: Get weather using coordinates with tone and conversation history
     result = get_full_weather_summary_by_coords(
         final_lat, 
         final_lon, 
         display_name=display_name, 
         user_prompt=processed_prompt, 
-        timezone_offset=0
+        timezone_offset=0,
+        tone=tone,  # NEW: Pass tone through
+        conversation_history=conversation_history  # NEW: Pass conversation through
     )
     
     # STEP 4: Validate result matches expected location
@@ -76,6 +90,7 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
     result["original_prompt"] = prompt_text
     result["processed_prompt"] = processed_prompt
     result["city_resolver_debug"] = resolver_result
+    result["tone_used"] = tone
     
     # Comprehensive diagnostics
     result["diagnostics"] = {
@@ -86,7 +101,9 @@ def process_prompt_from_app(prompt_text: str, location: dict | None = None) -> d
         "display_name": display_name,
         "city_resolver": resolver_result,
         "validation_passed": validate_weather_result(result, final_lat, final_lon),
-        "location_source": "explicit_city" if resolved_city_from_resolver else "user_location"
+        "location_source": "explicit_city" if resolved_city_from_resolver else "user_location",
+        "tone": tone,
+        "has_conversation_history": conversation_history is not None
     }
     
     # Agent creation (existing logic)
