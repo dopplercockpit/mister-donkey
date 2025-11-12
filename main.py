@@ -1,5 +1,5 @@
-# main.py (PATCHED VERSION)
-# Fixes: CORS issues, adds comprehensive logging, supports dev/prod modes
+# main.py (CORRECTED VERSION)
+# Fixes: CORS issues, adds conversation manager import
 
 import os
 import sys
@@ -12,8 +12,12 @@ from dotenv import load_dotenv
 from datetime import datetime
 from routes import bp as routes_bp
 from threading import Thread
+
+# ✅ FIXED: Import weather agent properly
 from weather_agent import monitor_all_sessions_loop
 from weather_agent import weather_agent_bp
+
+# ✅ NEW: Import conversation manager
 from conversation_manager import conversation_manager
 
 # Load .env
@@ -22,12 +26,13 @@ load_dotenv()
 app = Flask(__name__)
 
 # ========================================
-# CORS Configuration (Environment-aware)
+# CORS Configuration (CRITICAL FIX)
 # ========================================
 ENV = os.getenv("ENV", "prod").strip().lower()
 
+# ✅ FIXED: More permissive CORS for debugging
 if ENV == "dev" or ENV == "development":
-    # Development: Allow all origins for testing
+    # Development: Allow all origins
     CORS(app, 
          resources={r"/*": {
              "origins": "*",
@@ -37,109 +42,77 @@ if ENV == "dev" or ENV == "development":
              "supports_credentials": True
          }})
     print("⚠️ CORS: Development mode - allowing all origins")
-    print("⚠️ Security: This should NEVER be used in production!")
 else:
-    # Production: Strict origin control
+    # Production: Allow both your domains
     allowed_origins = [
         "https://weatherjackass.com",
-        "https://www.weatherjackass.com"
+        "https://www.weatherjackass.com",
+        "http://localhost:3000",  # ✅ Added for local testing
+        "http://localhost:5000",  # ✅ Added for local testing
     ]
     CORS(app, 
          resources={r"/*": {
              "origins": allowed_origins,
-             "allow_headers": ["Content-Type"],
+             "allow_headers": ["Content-Type", "Authorization"],
              "methods": ["GET", "POST", "OPTIONS"],
-             "supports_credentials": False
+             "expose_headers": ["Content-Type"],
+             "supports_credentials": True
          }})
     print(f"🔒 CORS: Production mode - allowing: {allowed_origins}")
 
 # ========================================
-# Request/Response Logging Middleware
+# Request/Response Logging
 # ========================================
 @app.before_request
 def log_request():
-    """Log all incoming requests for debugging"""
+    """Log incoming requests"""
     g.start_time = time.time()
     
-    # Skip logging for health checks to reduce noise
     if request.path == "/health":
         return
     
     print(f"\n{'='*60}")
-    print(f"📥 INCOMING REQUEST [{datetime.now().strftime('%H:%M:%S')}]")
+    print(f"📥 REQUEST [{datetime.now().strftime('%H:%M:%S')}]")
     print(f"{'='*60}")
     print(f"Method: {request.method}")
     print(f"Path: {request.path}")
-    print(f"Remote: {request.remote_addr}")
-    print(f"User-Agent: {request.headers.get('User-Agent', 'Unknown')[:100]}")
+    print(f"Origin: {request.headers.get('Origin', 'No origin')}")
     
     if request.is_json:
         try:
             body = request.get_json()
-            # Sanitize sensitive data
-            if 'api_key' in body:
-                body = {**body, 'api_key': '***REDACTED***'}
             print(f"Body: {json.dumps(body, indent=2)}")
-        except Exception as e:
-            print(f"Body: <Failed to parse JSON: {e}>")
-    elif request.data:
-        print(f"Body: {request.get_data(as_text=True)[:500]}")
+        except:
+            pass
 
 @app.after_request
 def log_response(response):
-    """Log all outgoing responses for debugging"""
-    # Skip logging for health checks
+    """Log responses and add CORS headers"""
     if request.path == "/health":
         return response
     
     duration = time.time() - g.get('start_time', time.time())
-    
     print(f"\n{'='*60}")
-    print(f"📤 OUTGOING RESPONSE [{datetime.now().strftime('%H:%M:%S')}]")
-    print(f"{'='*60}")
+    print(f"📤 RESPONSE [{datetime.now().strftime('%H:%M:%S')}] - {duration:.3f}s")
     print(f"Status: {response.status}")
-    print(f"Duration: {duration:.3f}s")
-    
-    # Add CORS headers for debugging
-    print(f"CORS Headers:")
-    for header in ['Access-Control-Allow-Origin', 'Access-Control-Allow-Methods']:
-        value = response.headers.get(header)
-        if value:
-            print(f"  {header}: {value}")
-    
-    if response.is_json:
-        try:
-            data = response.get_json()
-            data_str = json.dumps(data, indent=2)
-            
-            # Truncate long responses
-            if len(data_str) > 1000:
-                print(f"Body: {data_str[:1000]}...")
-                print(f"  ... (truncated, total {len(data_str)} chars)")
-            else:
-                print(f"Body: {data_str}")
-        except Exception as e:
-            print(f"Body: <Failed to parse: {e}>")
-    
     print(f"{'='*60}\n")
+    
     return response
 
 # ========================================
-# Global Error Handler
+# Error Handler
 # ========================================
 @app.errorhandler(Exception)
 def handle_error(error):
-    """Catch all unhandled errors and return JSON"""
+    """Catch all errors"""
     error_trace = traceback.format_exc()
     error_id = f"ERR-{int(time.time())}"
     
     print(f"\n{'🚨'*30}")
-    print(f"UNHANDLED ERROR [{error_id}]")
-    print(f"{'🚨'*30}")
+    print(f"ERROR [{error_id}]")
     print(error_trace)
     print(f"{'🚨'*30}\n")
     
-    # Return detailed error in dev, sanitized in prod
     if ENV == "dev":
         return {
             "error": str(error),
@@ -152,7 +125,6 @@ def handle_error(error):
         return {
             "error": "Internal server error",
             "error_id": error_id,
-            "message": "Please contact support with this error ID",
             "timestamp": datetime.now().isoformat()
         }, 500
 
@@ -163,28 +135,41 @@ app.register_blueprint(routes_bp)
 app.register_blueprint(weather_agent_bp, url_prefix="/weather")
 
 # ========================================
-# Health Check (before weather monitor starts)
+# Health Check
 # ========================================
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Detailed health check for debugging"""
-    import sys
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "environment": ENV,
-        "python_version": sys.version,
-        "cors_enabled": True,
-        "cors_mode": "permissive (dev)" if ENV == "dev" else "strict (prod)",
-        "endpoints": {
-            "main": ["/", "/health"],
-            "weather": ["/prompt", "/geo/reverse"],
-            "agents": ["/agents", "/weather/start-agent", "/weather/status/<user_id>"],
+        "features": {
+            "conversation_manager": True,
+            "weather_agent": True,
+            "cors_enabled": True
         }
     }
 
 # ========================================
-# Optional Weather Monitor (if enabled)
+# Optional: Conversation cleanup
+# ========================================
+def cleanup_conversations():
+    """Cleanup expired conversations periodically"""
+    while True:
+        try:
+            time.sleep(3600)  # Every hour
+            cleaned = conversation_manager.cleanup_expired_sessions()
+            if cleaned > 0:
+                print(f"🧹 Cleaned up {cleaned} expired sessions")
+        except Exception as e:
+            print(f"⚠️ Cleanup error: {e}")
+
+cleanup_thread = Thread(target=cleanup_conversations, daemon=True)
+cleanup_thread.start()
+
+# ========================================
+# Optional: Weather Monitor
 # ========================================
 if os.getenv("START_WEATHER_MONITOR", "").lower() == "true":
     print("🤖 Starting weather monitoring agent...")
@@ -204,6 +189,7 @@ if __name__ == "__main__":
     print(f"Environment: {ENV}")
     print(f"Port: {PORT}")
     print(f"Debug: {ENV == 'dev'}")
+    print(f"Conversation Manager: Active")
     print(f"{'🚀'*30}\n")
     
     app.run(
