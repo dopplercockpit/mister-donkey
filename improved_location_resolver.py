@@ -2,7 +2,7 @@
 # Fixes: Explicit city mentions now ALWAYS override geolocation
 
 from typing import Dict, Optional, Tuple
-from geo_utils_helper import reverse_geolocate, calculate_distance, is_valid_coordinates
+from geo_utils_helper import reverse_geolocate, calculate_distance, is_valid_coordinates, get_geolocation
 
 # # OLD VERSION (disabled 2025-11-13 by Josh to fix Rouville/Lyon bug)
 # def resolve_location_safely(...):
