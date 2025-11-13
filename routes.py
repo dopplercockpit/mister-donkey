@@ -118,7 +118,7 @@ def add_or_update_agent():
 @cross_origin()
 def get_tones():
     """GET /tones - List available personality tones"""
-    from dopplertower_engine_fixed import TONE_PRESETS
+    from dopplertower_engine import TONE_PRESETS
     
     tones = []
     for key, config in TONE_PRESETS.items():
@@ -208,9 +208,9 @@ def handle_prompt():
     # NEW: Tone and conversation parameters
     tone = data.get("tone", "sarcastic")
     session_id = data.get("session_id")
-    
+
     # Validate tone
-    from dopplertower_engine_fixed import TONE_PRESETS
+    from dopplertower_engine import TONE_PRESETS
     if tone not in TONE_PRESETS:
         tone = "sarcastic"
         print(f"⚠️ Invalid tone '{data.get('tone')}', using default: sarcastic")

@@ -50,29 +50,39 @@ def resolve_location_safely(
     # THIS NOW HAS ABSOLUTE PRIORITY - FIXES THE MAIN BUG
     if resolved_city and force_explicit_city:
         print(f"🎯 EXPLICIT CITY DETECTED: '{resolved_city}' - OVERRIDING geolocation!")
-        
-        # Geocode the requested city
+
+        # Geocode the requested city (pass user coords for proximity scoring)
         try:
             from dopplertower_engine import search_city_with_weatherapi
-            city_info = search_city_with_weatherapi(resolved_city)
-            
+
+            # Pass user coordinates for better disambiguation
+            city_info = search_city_with_weatherapi(
+                resolved_city,
+                user_lat=frontend_lat,  # Helps disambiguator pick closer match
+                user_lon=frontend_lon
+            )
+
             if city_info and city_info.get("lat") is not None and city_info.get("lon") is not None:
                 city_lat = float(city_info["lat"])
                 city_lon = float(city_info["lon"])
                 city_display = city_info.get("full_name") or resolved_city
-                
+
+                # Log disambiguation info if available
+                if city_info.get("score"):
+                    print(f"🎯 Disambiguation score: {city_info['score']} (source: {city_info.get('source', 'unknown')})")
+
                 # Validate the geocoded coordinates
                 if is_valid_coordinates(city_lat, city_lon):
                     # Optional: Log distance from user if we have their location
                     if frontend_lat is not None and frontend_lon is not None:
                         distance = calculate_distance(frontend_lat, frontend_lon, city_lat, city_lon)
                         print(f"ℹ️ User is {distance:.0f}km from requested city (using requested city anyway)")
-                    
+
                     print(f"✅ Using explicit city: {city_display} at {city_lat}, {city_lon}")
                     return city_lat, city_lon, city_display
                 else:
                     print(f"❌ Geocoded coordinates for '{resolved_city}' are invalid")
-        
+
         except Exception as e:
             print(f"❌ Failed to geocode '{resolved_city}': {e}")
     

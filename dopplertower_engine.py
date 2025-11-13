@@ -54,57 +54,41 @@ TONE_PRESETS = {
     }
 }
 
-def search_city_with_weatherapi(query):
+def search_city_with_weatherapi(query, user_lat=None, user_lon=None):
     """
-    Search for a city using both OpenWeather and WeatherAPI.
+    Search for a city using intelligent disambiguation.
     Returns city info with coordinates.
-    """
-    # 1) Try OpenWeather Direct Geocoding (supports state codes, etc.)
-    gw_url = (
-        f"http://api.openweathermap.org/geo/1.0/direct"
-        f"?q={query}&limit=5&appid={OPENWEATHER_API_KEY}"
-    )
-    r = requests.get(gw_url)
-    if r.status_code == 200:
-        data = r.json()
-        for c in data:
-            # Filter for US or Canada if it's a US-style location (like "Rock, Michigan")
-            if "country" in c and c["country"] in ["US", "CA"]:
-                return {
-                    "name":       c.get("name"),
-                    "region":     c.get("state", ""),
-                    "country":    c.get("country", ""),
-                    "lat":        c.get("lat"),
-                    "lon":        c.get("lon"),
-                    "full_name":  ", ".join(filter(None, [c.get("name"), c.get("state"), c.get("country")]))
-                }
-        # fallback: just return the first one if nothing matches above
-        if data:
-            c = data[0]
-            return {
-                "name":       c.get("name"),
-                "region":     c.get("state", ""),
-                "country":    c.get("country", ""),
-                "lat":        c.get("lat"),
-                "lon":        c.get("lon"),
-                "full_name":  ", ".join(filter(None, [c.get("name"), c.get("state"), c.get("country")]))
-            }
 
-    # 2) Fallback to WeatherAPI search.json
-    wa_url = f"{WEATHERAPI_URL}/search.json?key={WEATHERAPI_KEY}&q={query}"
-    resp = requests.get(wa_url)
-    if resp.status_code == 200:
-        results = resp.json()
-        if results:
-            city = results[0]
-            return {
-                "name":       city["name"],
-                "region":     city["region"],
-                "country":    city["country"],
-                "lat":        city["lat"],
-                "lon":        city["lon"],
-                "full_name":  f"{city['name']}, {city['region']}, {city['country']}"
-            }
+    Args:
+        query: City name to search for
+        user_lat: User's latitude for proximity scoring (optional)
+        user_lon: User's longitude for proximity scoring (optional)
+
+    NEW: Uses city_disambiguator for smart city resolution instead of
+    blindly returning first US/CA result!
+    """
+    # Import the smart disambiguator
+    from city_disambiguator import disambiguate_city
+
+    # Use the disambiguator which properly scores results by:
+    # - Exact name match
+    # - Proximity to user (if lat/lon provided)
+    # - Country/region popularity
+    # - Source reliability
+    result = disambiguate_city(query, lat=user_lat, lon=user_lon, return_all=False)
+
+    if result:
+        return {
+            "name":       result.get("name"),
+            "region":     result.get("region", ""),
+            "country":    result.get("country", ""),
+            "lat":        result.get("lat"),
+            "lon":        result.get("lon"),
+            "full_name":  ", ".join(filter(None, [result.get("name"), result.get("region"), result.get("country")])),
+            "score":      result.get("score"),  # Include score for debugging
+            "source":     result.get("source")   # Include source for debugging
+        }
+
     return None
 
 def celsius_to_fahrenheit(c):

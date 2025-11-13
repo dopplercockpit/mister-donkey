@@ -2,7 +2,7 @@
 # Fixes: Supports tone selection and conversation history
 
 import re
-from dopplertower_engine_fixed import get_full_weather_summary, get_full_weather_summary_by_coords
+from dopplertower_engine import get_full_weather_summary, get_full_weather_summary_by_coords
 from geo_utils_helper import get_geolocation, reverse_geolocate
 from nlpprepro import preprocess_with_gpt
 from agent_dkmanager import check_and_create_agent
