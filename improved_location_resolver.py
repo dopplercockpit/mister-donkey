@@ -4,108 +4,64 @@
 from typing import Dict, Optional, Tuple
 from geo_utils_helper import reverse_geolocate, calculate_distance, is_valid_coordinates
 
+# # OLD VERSION (disabled 2025-11-13 by Josh to fix Rouville/Lyon bug)
+# def resolve_location_safely(...):
+#     ...
+#     # old logic
+#     ...
+
 def resolve_location_safely(
     user_prompt: str,
     resolved_city: Optional[str],
     location: Optional[Dict],
-    force_explicit_city: bool = True  # NEW: Default to prioritizing explicit cities
+    force_explicit_city: bool = True
 ) -> Tuple[Optional[float], Optional[float], Optional[str]]:
     """
     Safely resolve location with strict validation to prevent wrong coordinates.
-    
-    Returns: (lat, lon, display_name)
-    
-    Priority (FIXED - Issue #1):
-    1. **ALWAYS prioritize explicit city mentions in prompt** ("weather in Paris")
-    2. Only use frontend coordinates if NO city is explicitly mentioned
-    3. Never mix frontend coords with a different city name
-    
-    New parameter:
-    - force_explicit_city: If True (default), explicit city ALWAYS wins over geolocation
+
+    Priority:
+    1. Explicit city from the prompt      → forward geocode name → (lat, lon, label)
+    2. Browser/location coordinates       → trust lat/lon from frontend
+    3. Fallback                           → None, force frontend to ask for city
     """
-    
-    # Extract frontend coordinates if available
-    frontend_lat = None
-    frontend_lon = None
-    frontend_name = None
-    
+    print("🧭 resolve_location_safely() called")
+    print(f"   user_prompt: {user_prompt!r}")
+    print(f"   resolved_city (from resolver): {resolved_city!r}")
+    print(f"   frontend location dict: {location!r}")
+
+    # 1) Explicit city from prompt
+    if force_explicit_city and resolved_city:
+        city_name = resolved_city.strip()
+        print(f"   🔎 Using explicit city from prompt: {city_name!r}")
+        lat, lon, full_name = get_geolocation(city_name)
+
+        if lat is not None and lon is not None and is_valid_coordinates(lat, lon):
+            # Label: use the full_name from geocoder if available
+            display_name = full_name or city_name
+            print(f"   ✅ Explicit city resolved to: ({lat}, {lon}) → {display_name}")
+            return lat, lon, display_name
+        else:
+            print("   ⚠️ Explicit city geocode failed or invalid, falling back to frontend location")
+
+    # 2) Frontend location (browser geolocation)
     if location:
-        try:
-            frontend_lat = float(location.get("lat")) if location.get("lat") is not None else None
-            frontend_lon = float(location.get("lon")) if location.get("lon") is not None else None
-            frontend_name = location.get("name")
-            
-            # Validate frontend coordinates
-            if frontend_lat is not None and frontend_lon is not None:
-                if not is_valid_coordinates(frontend_lat, frontend_lon):
-                    print(f"⚠️ Invalid frontend coordinates: {frontend_lat}, {frontend_lon}")
-                    frontend_lat = None
-                    frontend_lon = None
-        except (ValueError, TypeError) as e:
-            print(f"⚠️ Error parsing frontend coordinates: {e}")
-            frontend_lat = None
-            frontend_lon = None
-    
-    # CASE 1: User explicitly mentioned a city (e.g., "weather in Detroit")
-    # THIS NOW HAS ABSOLUTE PRIORITY - FIXES THE MAIN BUG
-    if resolved_city and force_explicit_city:
-        print(f"🎯 EXPLICIT CITY DETECTED: '{resolved_city}' - OVERRIDING geolocation!")
+        lat = location.get("lat")
+        lon = location.get("lon")
 
-        # Geocode the requested city (pass user coords for better disambiguation)
-        try:
-            from dopplertower_engine import search_city_with_weatherapi
+        if is_valid_coordinates(lat, lon):
+            # Try to re-use friendly name if frontend provided it (from /geo/reverse)
+            display_name = location.get("name")
+            if not display_name:
+                display_name = reverse_geolocate(lat, lon)
 
-            # CRITICAL FIX: Pass user coordinates for proximity-based disambiguation
-            city_info = search_city_with_weatherapi(
-                resolved_city,
-                user_lat=frontend_lat,
-                user_lon=frontend_lon
-            )
+            print(f"   ✅ Using frontend coordinates: ({lat}, {lon}) → {display_name!r}")
+            return lat, lon, display_name
+        else:
+            print(f"   ⚠️ Frontend coordinates invalid: {lat}, {lon}")
 
-            if city_info and city_info.get("lat") is not None and city_info.get("lon") is not None:
-                city_lat = float(city_info["lat"])
-                city_lon = float(city_info["lon"])
-                city_display = city_info.get("full_name") or resolved_city
-
-                # Log disambiguation score for debugging
-                if city_info.get("score"):
-                    print(f"🎯 Disambiguation score: {city_info['score']} (source: {city_info.get('source', 'unknown')})")
-
-                # Validate the geocoded coordinates
-                if is_valid_coordinates(city_lat, city_lon):
-                    # Optional: Log distance from user if we have their location
-                    if frontend_lat is not None and frontend_lon is not None:
-                        distance = calculate_distance(frontend_lat, frontend_lon, city_lat, city_lon)
-                        print(f"ℹ️ User is {distance:.0f}km from requested city (using requested city anyway)")
-
-                    print(f"✅ Using explicit city: {city_display} at {city_lat}, {city_lon}")
-                    return city_lat, city_lon, city_display
-                else:
-                    print(f"❌ Geocoded coordinates for '{resolved_city}' are invalid")
-
-        except Exception as e:
-            print(f"❌ Failed to geocode '{resolved_city}': {e}")
-    
-    # CASE 2: No explicit city, use frontend coordinates (user's actual location)
-    if frontend_lat is not None and frontend_lon is not None:
-        print(f"📍 No explicit city - using frontend coordinates: {frontend_lat}, {frontend_lon}")
-        
-        # Get a human-readable name for these coordinates
-        display_name = frontend_name
-        if not display_name:
-            try:
-                display_name = reverse_geolocate(frontend_lat, frontend_lon)
-            except Exception as e:
-                print(f"⚠️ Reverse geocoding failed: {e}")
-                display_name = f"{frontend_lat:.2f}, {frontend_lon:.2f}"
-        
-        print(f"✅ Using user's location: {display_name}")
-        return frontend_lat, frontend_lon, display_name
-    
-    # CASE 3: No explicit city AND no frontend coordinates
-    print("❌ No valid location data available")
+    # 3) Fallback: nothing usable
+    print("   ❌ No valid location could be resolved (no explicit city, no valid coords)")
     return None, None, None
-
 
 def validate_weather_result(result: Dict, expected_lat: float, expected_lon: float) -> bool:
     """

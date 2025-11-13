@@ -100,13 +100,23 @@ def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> T
             return modified_prompt, None, metadata
 
     # --------------------------------------------------------------------------
-    # 4) No explicit "in X" and no "name" from front-end → fallback to "none"
-    #    Caller (routes.py) will check for lat/lon and run reverse_geolocate() if needed.
+    # 4) No explicit "in X" and no implicit keyword, but frontend gave us a name.
+    #    Use that as a *fallback* label (e.g. "Lyon, France").
+    # --------------------------------------------------------------------------
+
+    if location is not None and isinstance(location, dict) and location.get("name"):
+        resolved_city = location["name"]
+        metadata["resolution_method"] = "frontend_location_name"
+        metadata["resolved_city"] = resolved_city
+        return modified_prompt, resolved_city, metadata
+
+    # --------------------------------------------------------------------------
+    # 5) Absolute fallback: no city at all. Caller can rely on lat/lon and
+    #    reverse_geolocate() later.
     # --------------------------------------------------------------------------
     metadata["resolution_method"] = "none"
     metadata["resolved_city"] = None
     return modified_prompt, None, metadata
-
 
 # ------------------------------------------------------------------------------
 # Re-create preprocess_prompt_for_weather so process_app_prompt.py finds all keys it expects.
