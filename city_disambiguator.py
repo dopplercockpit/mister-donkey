@@ -91,23 +91,42 @@ def score_candidate(candidate: dict, user_lat: float = None, user_lon: float = N
         score += 3.0
     elif query.lower() in candidate.get("name", "").lower():
         score += 1.5
+
+    # Capital city / major world city bonus
+    # These cities should be strongly preferred when there's ambiguity
+    world_capitals = {
+        "paris": "FR", "london": "GB", "tokyo": "JP", "berlin": "DE",
+        "rome": "IT", "madrid": "ES", "beijing": "CN", "moscow": "RU",
+        "delhi": "IN", "cairo": "EG", "sydney": "AU", "toronto": "CA",
+        "mexico city": "MX", "seoul": "KR", "bangkok": "TH", "vienna": "AT",
+        "amsterdam": "NL", "brussels": "BE", "athens": "GR", "oslo": "NO",
+        "stockholm": "SE", "copenhagen": "DK", "dublin": "IE", "lisbon": "PT"
+    }
+    city_name_lower = candidate.get("name", "").lower()
+    if city_name_lower in world_capitals:
+        expected_country = world_capitals[city_name_lower]
+        if candidate.get("country", "") == expected_country:
+            score += 2.0  # Strong bonus for capital cities in their correct country
     
-    # Country/region popularity weighting (adaptive, not hardcoded)
+    # Country/region popularity weighting
+    # FIXED: More balanced scoring - no country gets too much advantage
     country_weights = {
-        "US": 2.0, "CA": 1.8, "GB": 1.8, "FR": 1.6, "DE": 1.4, "AU": 1.2
+        "FR": 1.5, "GB": 1.5, "US": 1.5, "CA": 1.3, "DE": 1.3, "AU": 1.2,
+        "IT": 1.4, "ES": 1.4, "JP": 1.5, "CN": 1.3
     }
     country_code = candidate.get("country", "")
     if country_code in country_weights:
         score += country_weights[country_code]
-    
-    # Major region/state bonus (adaptive scoring)
+
+    # Major region/state bonus
+    # FIXED: Reduced from 1.0 to 0.5 to prevent overwhelming the country score
     region = candidate.get("region", "").lower()
     major_regions = [
         "california", "texas", "new york", "florida", "ontario", "quebec",
         "england", "scotland", "île-de-france", "bavaria", "catalonia"
     ]
     if any(major in region for major in major_regions):
-        score += 1.0
+        score += 0.5
     
     # Proximity bonus if user location provided
     if user_lat is not None and user_lon is not None:
