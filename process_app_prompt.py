@@ -1,5 +1,6 @@
 # process_app_prompt.py (UPDATED VERSION)
 # Fixes: Supports tone selection and conversation history
+# NEW: Uses LLM router for intelligent location resolution
 
 import re
 from dopplertower_engine import get_full_weather_summary, get_full_weather_summary_by_coords
@@ -7,6 +8,7 @@ from geo_utils_helper import get_geolocation, reverse_geolocate
 from nlpprepro import preprocess_with_gpt
 from agent_dkmanager import check_and_create_agent
 from city_resolver import resolve_city_context, preprocess_prompt_for_weather
+from llm_router import preprocess_prompt_for_weather_with_llm  # NEW: LLM-based router
 from improved_location_resolver import resolve_location_safely, validate_weather_result
 
 def normalize_city_name(city: str) -> str:
@@ -30,19 +32,20 @@ def process_prompt_from_app(
     print(f"🎭 Tone: {tone}")
     if conversation_history:
         print(f"💬 Conversation history: {len(conversation_history)} messages")
-    
-    # STEP 0: City Resolver Preprocessing
-    resolver_result = preprocess_prompt_for_weather(prompt_text, location)
+
+    # STEP 0: LLM Router Preprocessing (NEW: Uses intelligent semantic routing)
+    resolver_result = preprocess_prompt_for_weather_with_llm(prompt_text, location)
     
     processed_prompt = resolver_result["processed_prompt"]
     resolved_city_from_resolver = resolver_result["resolved_city"]
     resolver_metadata = resolver_result["metadata"]
     
-    print(f"🎯 City Resolver Results:")
+    print(f"🎯 LLM Router Results:")
     print(f"   Original: '{resolver_result['original_prompt']}'")
     print(f"   Processed: '{processed_prompt}'")
     print(f"   Resolved City: {resolved_city_from_resolver}")
     print(f"   Method: {resolver_metadata.get('resolution_method')}")
+    print(f"   Is Explicit: {resolver_metadata.get('is_location_explicit')}")
     
     # STEP 1: NLP Preprocessing with GPT
     parsed = preprocess_with_gpt(processed_prompt)
@@ -98,7 +101,7 @@ def process_prompt_from_app(
         "resolved_city_string": resolved_city_from_resolver,
         "final_coords": {"lat": final_lat, "lon": final_lon},
         "display_name": display_name,
-        "city_resolver": resolver_result,
+        "llm_router": resolver_result,  # Changed from city_resolver to llm_router
         "validation_passed": validate_weather_result(result, final_lat, final_lon),
         "location_source": "explicit_city" if resolved_city_from_resolver else "user_location",
         "tone": tone,

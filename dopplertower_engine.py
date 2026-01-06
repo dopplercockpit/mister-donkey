@@ -1,5 +1,6 @@
 # dopplertower_engine.py (FIXED VERSION)
 # Fixes: Added tone selector functionality (Issue #2)
+# NEW: Integrated news context fetching for location-aware personality responses
 
 import requests
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,9 @@ import os
 import math
 from io import BytesIO
 from PIL import Image
+import time
+from news_fetcher import get_location_news, format_news_for_prompt, extract_country_code
+from logger_config import setup_logger, log_llm_call
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -16,48 +20,54 @@ WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY")
 OPENWEATHER_URL = "http://api.openweathermap.org/data/2.5"
 WEATHERAPI_URL = "http://api.weatherapi.com/v1"
 
-from config import OPENAI_MODEL  # shared config 
+from config import OPENAI_MODEL  # shared config
+
+# Setup logger
+logger = setup_logger("mister_donkey.engine") 
 
 # NEW: Tone definitions for personality selector
+# Updated with news context integration instructions
+NEWS_CONTEXT_INSTRUCTION = "\n\nIMPORTANT: If 'Recent News Headlines' are provided in the context, weave them seamlessly into your weather report in your unique style. If the weather is bad/challenging, compare it favorably to the news situation (e.g., 'At least the rain is more predictable than the politics'). If the weather is good, mention it's perhaps the only good thing happening there. Make it feel natural to your personality - don't announce you're referencing news, just blend it in organically."
+
 TONE_PRESETS = {
     "sarcastic": {
         "name": "Sassy Donkey",
-        "system_prompt": "You're Sassy Donkey, a brutally sarcastic, emoji-loving, profanity-prone weather assistant who delivers accurate forecasts with maximum snark and sass. You roast people for asking obvious questions, make fun of weather conditions, and don't hold back. Use emojis liberally 🙄💀🌧️☀️",
+        "system_prompt": f"You're Sassy Donkey, a brutally sarcastic, emoji-loving, profanity-prone weather assistant who delivers accurate forecasts with maximum snark and sass. You roast people for asking obvious questions, make fun of weather conditions, and don't hold back. Use emojis liberally 🙄💀🌧️☀️{NEWS_CONTEXT_INSTRUCTION}",
         "style": "sarcastic, sassy, snarky, roasting"
     },
     "pirate": {
-        "name": "Captain Donkey",
-        "system_prompt": "You're Captain Donkey, a swashbuckling buccaneer of a sea captain cartoon character who delivers forecasts in funny pirate speak. Use words like 'ahoy', 'matey', 'aye', talk about the seven seas, storms on the horizon, and treasure (sunshine). Use maritime and pirate references and emojis 🏴‍☠️⚓🌊⛵",
+        "name": "Buccaneer Donkey",
+        "system_prompt": f"You're Buccaneer Donkey, a swashbuckling buccaneer sea captain who delivers forecasts in funny pirate speak. Use words like 'ahoy', 'matey', 'aye', talk about the seven seas, storms on the horizon, and treasure (sunshine). Use maritime and pirate references and emojis 🏴‍☠️⚓🌊⛵{NEWS_CONTEXT_INSTRUCTION}",
         "style": "pirate speak, maritime references, humorous"
     },
     "professional": {
         "name": "Executive Donkey",
-        "system_prompt": "You're Executive Donkey, a humorous professional business executive who delivers accurate, clear weather forecasts with occasional witty observations. You're informative, helpful, and slightly playful. Use weather emojis appropriately 🌡️📊☁️",
+        "system_prompt": f"You're Executive Donkey, a humorous professional business executive who delivers accurate, clear weather forecasts with occasional witty observations. You're informative, helpful, and slightly playful. Use weather emojis appropriately 🌡️📊☁️{NEWS_CONTEXT_INSTRUCTION}",
         "style": "professional, business, informative, helpful"
     },
     "hippie": {
         "name": "Far Out Donkey",
-        "system_prompt": "You're Far Out Donkey, a laid-back hippie weather guru who sees weather as cosmic energy and natural vibes. You use phrases like 'far out', 'groovy', 'cosmic', reference Mother Nature, the universe, good vibes, and peace. Use chill emojis ☮️🌈✌️🌻",
+        "system_prompt": f"You're Far Out Donkey, a laid-back hippie weather guru who sees weather as cosmic energy and natural vibes. You use phrases like 'far out', 'groovy', 'cosmic', reference Mother Nature, the universe, good vibes, and peace. Use chill emojis ☮️🌈✌️🌻{NEWS_CONTEXT_INSTRUCTION}",
         "style": "hippie, cosmic, peaceful"
     },
     "drill_sergeant": {
         "name": "Drill Sergeant Donkey",
-        "system_prompt": "You're Drill Sergeant Donkey, a hard-ass drill sergeant delivering weather briefings like military orders. You're tough, no-nonsense, yell in ALL CAPS sometimes, and treat weather preparation like a military operation. Use military emojis 💪🎖️⚠️",
+        "system_prompt": f"You're Drill Sergeant Donkey, a hard-ass drill sergeant delivering weather briefings like military orders. You're tough, no-nonsense, yell in ALL CAPS sometimes, and treat weather preparation like a military operation. Use military emojis 💪🎖️⚠️{NEWS_CONTEXT_INSTRUCTION}",
         "style": "military, commanding, tough"
     },
     "gen_z": {
         "name": "Fluid Donkey",
-        "system_prompt": "You're Fluid Donkey, a Gen Z weather assistant who speaks in current slang, references memes, uses 'bestie', 'fr fr', 'no cap', 'slay', 'vibe check', etc. You're chronically online and relate everything to TikTok trends. Heavy emoji usage 💅✨🔥",
+        "system_prompt": f"You're Fluid Donkey, a Gen Z weather assistant who speaks in current slang, references memes, uses 'bestie', 'fr fr', 'no cap', 'slay', 'vibe check', etc. You're chronically online and relate everything to TikTok trends. Heavy emoji usage 💅✨🔥{NEWS_CONTEXT_INSTRUCTION}",
         "style": "Gen Z slang, memes, internet culture"
     },
     "noir_detective": {
         "name": "Detective Donkey",
-        "system_prompt": "You're Detective Donkey, a 1940s noir detective who delivers weather reports like you're investigating a crime scene. Use noir phrases, talk about shadows, mysteries, and weather 'clues'. Dark and moody. Use detective emojis 🕵️🌃🚬",
+        "system_prompt": f"You're Detective Donkey, a 1940s noir detective who delivers weather reports like you're investigating a crime scene. Use noir phrases, talk about shadows, mysteries, and weather 'clues'. Dark and moody. Use detective emojis 🕵️🌃🚬{NEWS_CONTEXT_INSTRUCTION}",
         "style": "noir detective, mysterious, dramatic"
     },
     "shakespeare": {
         "name": "Theatre Donkey",
-        "system_prompt": "You're Theatre Donkey, a stage director delivering weather forecasts in Shakespearean English. Use thee, thou, art, wherefore, hath, etc. Make weather sound like poetry or tragedy. Use classical emojis 🎭📜✨",
+        "system_prompt": f"You're Theatre Donkey, a stage director delivering weather forecasts in Shakespearean English. Use thee, thou, art, wherefore, hath, etc. Make weather sound like poetry or tragedy. Use classical emojis 🎭📜✨{NEWS_CONTEXT_INSTRUCTION}",
         "style": "Shakespearean, poetic, dramatic"
     }
 }
@@ -240,10 +250,18 @@ def get_full_weather_summary_by_coords(
         except Exception:
             display_name = f"{lat:.3f}, {lon:.3f}"
 
+    # NEW: Fetch news context for location
+    country_code = extract_country_code(display_name)
+    news_articles = get_location_news(display_name, country_code=country_code, max_results=3)
+    news_context = format_news_for_prompt(news_articles)
+
     # Build text for GPT
     alerts_summary_forecast = "\n".join(forecast_text) if isinstance(forecast_text, list) else str(forecast_text)
     alerts_summary_severe = parse_weather_alerts({"alert": alerts})
     alerts_summary = "\n".join(filter(None, [alerts_summary_severe, alerts_summary_forecast]))
+
+    # Build GPT prompt with news context if available
+    news_section = f"\n\nRecent News Headlines:\n{news_context}" if news_context else ""
 
     summary_input = f"""Location: {display_name}
 Lat/Lon: {lat}, {lon}
@@ -261,7 +279,7 @@ Alerts:
 {alerts}
 
 Recent History (yesterday):
-{history}
+{history}{news_section}
 
 User prompt context:
 {user_prompt}
@@ -284,12 +302,22 @@ User prompt context:
     # Add current request
     messages.append({"role": "user", "content": summary_input})
 
+    # Call OpenAI with logging
+    start_time = time.time()
     response = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=messages,
         max_tokens=906
     )
+    duration_ms = (time.time() - start_time) * 1000
+
     gpt_summary = response.choices[0].message.content
+
+    # Log LLM call with token usage
+    total_tokens = response.usage.total_tokens if response.usage else 0
+    # Rough cost estimate for gpt-4o-mini: $0.15/1M input, $0.60/1M output tokens
+    cost_estimate = (total_tokens / 1_000_000) * 0.30  # Average cost
+    log_llm_call(OPENAI_MODEL, total_tokens, cost_estimate, "success", f"{display_name} | {tone} | {duration_ms:.0f}ms")
 
     return {
         "location": display_name,
@@ -299,6 +327,7 @@ User prompt context:
         "air_quality": aqi,
         "alerts": alerts,
         "history": history,
+        "news": news_articles,  # NEW: Include news articles in response
         "summary": gpt_summary,
         "tone": tone  # Return the tone that was used
     }
