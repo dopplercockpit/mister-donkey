@@ -119,12 +119,12 @@ def add_or_update_agent():
 def get_tones():
     """GET /tones - List available personality tones"""
     from dopplertower_engine import TONE_PRESETS
-    
+
     tones = []
     for key, config in TONE_PRESETS.items():
         tones.append({
             "id": key,
-            "name": key.replace("_", " ").title(),
+            "name": config.get("name", key.replace("_", " ").title()),
             "description": config["system_prompt"][:150] + "...",
             "emoji": {
                 "sarcastic": "🙄",
@@ -137,7 +137,7 @@ def get_tones():
                 "shakespeare": "🎭"
             }.get(key, "🌦️")
         })
-    
+
     return jsonify({
         "tones": tones,
         "default": "sarcastic"

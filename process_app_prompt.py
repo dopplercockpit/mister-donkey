@@ -48,12 +48,11 @@ def process_prompt_from_app(
     parsed = preprocess_with_gpt(processed_prompt)
     print("🤖 GPT preprocessor returned:", parsed)
 
-    # STEP 2: Safely resolve location (with explicit city priority)
+    # STEP 2: Safely resolve location (explicit cities always take priority over geolocation)
     final_lat, final_lon, display_name = resolve_location_safely(
         user_prompt=prompt_text,
         resolved_city=resolved_city_from_resolver,
-        location=location,
-        force_explicit_city=True  # ALWAYS prioritize explicit cities
+        location=location
     )
     
     # If we couldn't resolve location, return error
