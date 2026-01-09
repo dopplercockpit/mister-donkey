@@ -32,6 +32,9 @@ from conversation_manager import (
     update_conversation_metadata
 )
 
+# Session logger for tracking metrics
+from session_logger import session_logger
+
 # Create a Blueprint
 bp = Blueprint("routes", __name__)
 
@@ -236,7 +239,11 @@ def handle_prompt():
     except Exception as ex:
         error_trace = traceback.format_exc()
         print(f"❌ ERROR in /prompt:\n{error_trace}")
-        
+
+        # Log error to session if session_id exists
+        if session_id:
+            session_logger.log_error(session_id, f"City resolver error: {str(ex)}")
+
         return jsonify({
             "error": str(ex),
             "error_type": type(ex).__name__,
@@ -335,17 +342,21 @@ def handle_prompt():
     except Exception as ex:
         error_msg = str(ex)
         error_trace = traceback.format_exc()
-        
+
+        # Log error to session if session_id exists
+        if session_id:
+            session_logger.log_error(session_id, f"Prompt processing error: {error_msg}")
+
         debug_info = {
             "error": error_msg,
             "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
             "debug_enabled": debug_requested or is_auto_request
         }
-        
+
         if is_auto_request:
             print(f"🛑 Auto-load failed: {error_msg}")
             error_msg = f"Auto-loading failed: {error_msg}"
-        
+
         print(f"❌ ERROR in process_prompt_from_app:\n{error_trace}")
 
         return jsonify({"error": error_msg, "debug_info": debug_info}), 500

@@ -6,6 +6,7 @@ import time
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import os
+from session_logger import session_logger
 
 class ConversationManager:
     """
@@ -47,11 +48,9 @@ class ConversationManager:
     
     def create_session(self, user_id: Optional[str] = None) -> str:
         """Create a new conversation session"""
-        # Generate unique session ID
-        session_id = f"session_{int(time.time() * 1000)}"
-        if user_id:
-            session_id = f"{user_id}_{session_id}"
-        
+        # Generate new session ID using the logger (DDMMYYXX format)
+        session_id = session_logger.generate_session_id()
+
         self.sessions[session_id] = {
             "session_id": session_id,
             "user_id": user_id,
@@ -64,7 +63,10 @@ class ConversationManager:
                 "message_count": 0
             }
         }
-        
+
+        # Log the session creation
+        session_logger.create_session(session_id)
+
         self._save_session(session_id)
         print(f"🆕 Created new session: {session_id}")
         return session_id
@@ -86,22 +88,28 @@ class ConversationManager:
     def add_message(self, session_id: str, role: str, content: str, metadata: Optional[Dict] = None):
         """Add a message to the conversation history"""
         session = self.get_session(session_id)
-        
+
         if not session:
             print(f"❌ Session {session_id} not found")
             return False
-        
+
         message = {
             "role": role,  # 'user' or 'assistant'
             "content": content,
             "timestamp": datetime.now().isoformat(),
             "metadata": metadata or {}
         }
-        
+
         session["messages"].append(message)
         session["last_activity"] = datetime.now().isoformat()
         session["metadata"]["message_count"] = len(session["messages"])
-        
+
+        # Update session logger with prompt/response counts
+        if role == "user":
+            session_logger.increment_prompts(session_id)
+        elif role == "assistant":
+            session_logger.increment_responses(session_id)
+
         self._save_session(session_id)
         return True
     
