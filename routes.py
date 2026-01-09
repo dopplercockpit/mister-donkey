@@ -347,5 +347,198 @@ def handle_prompt():
             error_msg = f"Auto-loading failed: {error_msg}"
         
         print(f"❌ ERROR in process_prompt_from_app:\n{error_trace}")
-        
+
         return jsonify({"error": error_msg, "debug_info": debug_info}), 500
+
+
+@bp.route("/prompt/structured", methods=["POST"])
+@cross_origin()
+def handle_prompt_structured():
+    """
+    POST /prompt/structured - Returns structured JSON weather response.
+
+    NEW in Phase 3:
+    - Returns weather data in structured format with separate sections
+    - Includes text_summary, weather object, news array, metadata
+    - Perfect for building rich UI with weather cards
+    - All features from /prompt endpoint available
+
+    Request Body:
+        {
+            "prompt": "Weather in New York",
+            "location": {"lat": 40.7, "lon": -74.0},  // optional
+            "tone": "sarcastic",  // optional
+            "session_id": "uuid",  // optional for conversation
+            "auto": false,  // optional
+            "debug": false  // optional
+        }
+
+    Response Format:
+        {
+            "text_summary": "GPT-generated text with personality...",
+            "weather": {
+                "current": {
+                    "temp_c": 15,
+                    "temp_f": 59,
+                    "conditions": "Partly Cloudy",
+                    "icon": "⛅",
+                    "humidity": 65,
+                    ...
+                },
+                "forecast_3day": [
+                    {
+                        "day": "Monday",
+                        "temp_high_c": 18,
+                        "temp_low_c": 12,
+                        "conditions": "Sunny",
+                        "icon": "☀️"
+                    },
+                    ...
+                ],
+                "alerts": [...],
+                "air_quality": "🟢 Good"
+            },
+            "news": {
+                "articles": [...],
+                "has_context": true,
+                "count": 3
+            },
+            "metadata": {
+                "location": "New York, NY, USA",
+                "coords": {"lat": 40.7, "lon": -74.0},
+                "tone": "sarcastic",
+                "timestamp": "2026-01-06T...",
+                "has_alerts": false,
+                "has_news": true
+            },
+            "raw": {  // Full API responses for advanced use
+                "current": {...},
+                "forecast": {...}
+            }
+        }
+    """
+    # Import process function with structured support
+    from process_app_prompt import process_prompt_from_app_structured
+
+    data = request.get_json() or {}
+    user_prompt = (data.get("prompt") or "").strip()
+    location = data.get("location") or {}
+    is_auto_request = data.get("auto", False)
+    debug_requested = bool(data.get("debug", False))
+
+    # Tone and conversation parameters
+    tone = data.get("tone", "sarcastic")
+    session_id = data.get("session_id")
+
+    # Validate tone
+    from dopplertower_engine import TONE_PRESETS
+    if tone not in TONE_PRESETS:
+        tone = "sarcastic"
+        print(f"⚠️ Invalid tone '{data.get('tone')}', using default: sarcastic")
+
+    # Extract location data
+    lat = location.get("lat")
+    lon = location.get("lon")
+
+    # Logging
+    if debug_requested or is_auto_request:
+        print(f"\n🔍 STRUCTURED endpoint: auto={is_auto_request}, debug={debug_requested}, tone={tone}")
+        print(f"📝 Input prompt: '{user_prompt}'")
+        print(f"📍 Location data: {json.dumps(location)}")
+        if session_id:
+            print(f"💬 Session ID: {session_id}")
+        print("-" * 50)
+
+    # City Resolver preprocessing
+    try:
+        modified_prompt, resolved_city, resolver_metadata = resolve_city_context(user_prompt, location)
+    except Exception as ex:
+        error_trace = traceback.format_exc()
+        print(f"❌ ERROR in /prompt/structured:\n{error_trace}")
+
+        return jsonify({
+            "error": str(ex),
+            "error_type": type(ex).__name__,
+            "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+    # Reverse geocoding fallback
+    if lat is not None and lon is not None and not resolved_city:
+        try:
+            fallback_city = reverse_geolocate(lat, lon)
+        except Exception as ex:
+            print(f"⚠️ Reverse geocode error: {str(ex)}")
+            fallback_city = None
+
+        if fallback_city:
+            clean_city = fallback_city.split(",")[0].strip()
+            if clean_city.lower() not in modified_prompt.lower():
+                modified_prompt = f"{modified_prompt} in {clean_city}" if modified_prompt else f"Weather in {clean_city}"
+                print(f"🔄 Structured endpoint: Injected fallback city: '{modified_prompt}'")
+
+    # Validate prompt
+    if not modified_prompt:
+        error_msg = "Missing 'prompt' in request."
+        if is_auto_request:
+            error_msg = "Auto-loading failed: Could not determine location or generate prompt."
+        return jsonify({"error": error_msg}), 400
+
+    # Handle conversation history
+    conversation_history = None
+    if session_id:
+        conversation_history = get_conversation(session_id)
+        print(f"💬 Loaded {len(conversation_history)} previous messages")
+
+    # Process with STRUCTURED flag
+    try:
+        result = process_prompt_from_app_structured(
+            modified_prompt,
+            location=location,
+            tone=tone,
+            conversation_history=conversation_history
+        )
+
+        # Add message to conversation history
+        if session_id:
+            add_message_to_conversation(session_id, "user", user_prompt)
+            add_message_to_conversation(session_id, "assistant", result.get("text_summary", ""))
+            result["session_id"] = session_id
+            result["conversation_length"] = len(get_conversation(session_id))
+
+        # Add metadata
+        if debug_requested or is_auto_request:
+            result["debug"] = True
+            result["debug_info"] = {
+                "auto_request": is_auto_request,
+                "debug_requested": debug_requested,
+                "original_prompt": user_prompt,
+                "modified_prompt": modified_prompt,
+                "resolver_metadata": resolver_metadata,
+                "tone_used": tone,
+                "has_conversation_history": conversation_history is not None,
+                "endpoint": "structured"
+            }
+
+        if is_auto_request:
+            result["auto_loaded"] = True
+            result["auto_prompt"] = modified_prompt
+            print(f"🤖 Structured auto-load successful: '{modified_prompt}'")
+
+        return jsonify(result)
+
+    except Exception as ex:
+        error_msg = str(ex)
+        error_trace = traceback.format_exc()
+
+        if is_auto_request:
+            print(f"🛑 Structured auto-load failed: {error_msg}")
+            error_msg = f"Auto-loading failed: {error_msg}"
+
+        print(f"❌ ERROR in /prompt/structured:\n{error_trace}")
+
+        return jsonify({
+            "error": error_msg,
+            "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
+            "endpoint": "structured"
+        }), 500

@@ -7,6 +7,12 @@ import re
 from typing import Dict, Optional, Tuple
 from geo_utils_helper import reverse_geolocate
 
+def _cleanup_dangling_in(text: str) -> str:
+    cleaned = re.sub(r"\b in\b\s*(?=[,?!.;]|$)", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+([,?!.;])", r"\1", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
 def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> Tuple[str, Optional[str], Dict]:
     """
     Main City Resolver function.
@@ -37,15 +43,12 @@ def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> T
     resolved_city: Optional[str] = None
     modified_prompt: str = text  # By default, return the prompt unchanged
 
-    # --------------------------------------------------------------------------
-    # 1) If the frontend already gave us a "name" (e.g. user clicked "Yep, that's right"),
-    #    use that directly:
-    # --------------------------------------------------------------------------
-    if location is not None and isinstance(location, dict) and location.get("name"):
-        resolved_city = location["name"]
-        metadata["resolution_method"] = "frontend_location_name"
-        metadata["resolved_city"] = resolved_city
-        return modified_prompt, resolved_city, metadata
+    # REMOVED: location.name early return so explicit city in prompt always wins.
+    # if location is not None and isinstance(location, dict) and location.get("name"):
+    #     resolved_city = location["name"]
+    #     metadata["resolution_method"] = "frontend_location_name"
+    #     metadata["resolved_city"] = resolved_city
+    #     return modified_prompt, resolved_city, metadata
 
     # --------------------------------------------------------------------------
     # 2) Look for an explicit “in <city>” phrase in the user's prompt.
@@ -69,6 +72,7 @@ def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> T
     match = explicit_pattern.search(text)
     if match:
         candidate = match.group(1).strip()          # e.g. "Paris" or "New York"
+        candidate = re.split(r"\s+in\s+", candidate, maxsplit=1, flags=re.IGNORECASE)[0].strip()
         candidate_title = candidate.title()         # Normalize to Title Case ("new york" → "New York")
 
         # Reject filler tokens like "here", "outside", etc.
@@ -83,6 +87,7 @@ def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> T
             modified_prompt = (text[:start] + text[end:]).strip()
             # Collapse any accidental double spaces left behind
             modified_prompt = re.sub(r"\s{2,}", " ", modified_prompt).strip()
+            modified_prompt = _cleanup_dangling_in(modified_prompt)
 
             return modified_prompt, resolved_city, metadata
         # else: it was "in here" or "in outside" → ignore, fall through
@@ -97,6 +102,7 @@ def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> T
         if key in lower_text:
             metadata["resolution_method"] = "implicit_keyword"
             metadata["resolved_city"] = None
+            modified_prompt = _cleanup_dangling_in(modified_prompt)
             return modified_prompt, None, metadata
 
     # --------------------------------------------------------------------------
@@ -108,6 +114,7 @@ def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> T
         resolved_city = location["name"]
         metadata["resolution_method"] = "frontend_location_name"
         metadata["resolved_city"] = resolved_city
+        modified_prompt = _cleanup_dangling_in(modified_prompt)
         return modified_prompt, resolved_city, metadata
 
     # --------------------------------------------------------------------------
@@ -116,6 +123,7 @@ def resolve_city_context(prompt_text: str, location: Optional[Dict] = None) -> T
     # --------------------------------------------------------------------------
     metadata["resolution_method"] = "none"
     metadata["resolved_city"] = None
+    modified_prompt = _cleanup_dangling_in(modified_prompt)
     return modified_prompt, None, metadata
 
 # ------------------------------------------------------------------------------

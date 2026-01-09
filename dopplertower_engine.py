@@ -216,17 +216,22 @@ def parse_weather_alerts(alerts):
     return "\n".join(summaries)
 
 def get_full_weather_summary_by_coords(
-    lat: float, 
-    lon: float, 
-    display_name: str = None, 
-    user_prompt: str = "", 
+    lat: float,
+    lon: float,
+    display_name: str = None,
+    user_prompt: str = "",
     timezone_offset: int = 0,
     tone: str = "sarcastic",  # NEW: Tone parameter
-    conversation_history: list = None  # NEW: For conversation continuity
+    conversation_history: list = None,  # NEW: For conversation continuity
+    structured: bool = False  # NEW: Return structured format if True
 ) -> dict:
     """
     The 'no bullshit' path: you give me lat/lon, I fetch everything precisely for that point.
-    NEW: Supports tone selection and conversation history!
+    NEW: Supports tone selection, conversation history, and structured responses!
+
+    Args:
+        structured: If True, returns format_structured_weather_response() output
+                   If False, returns legacy format (backward compatible)
     """
     from geo_utils_helper import reverse_geolocate
 
@@ -319,7 +324,8 @@ User prompt context:
     cost_estimate = (total_tokens / 1_000_000) * 0.30  # Average cost
     log_llm_call(OPENAI_MODEL, total_tokens, cost_estimate, "success", f"{display_name} | {tone} | {duration_ms:.0f}ms")
 
-    return {
+    # Build raw response
+    raw_response = {
         "location": display_name,
         "coords": {"lat": lat, "lon": lon},
         "current": current,
@@ -331,6 +337,12 @@ User prompt context:
         "summary": gpt_summary,
         "tone": tone  # Return the tone that was used
     }
+
+    # Return structured format if requested, otherwise return legacy format
+    if structured:
+        return format_structured_weather_response(raw_response)
+    else:
+        return raw_response
 
 
 def get_full_weather_summary(
@@ -376,3 +388,208 @@ def get_available_tones():
         }
         for key, config in TONE_PRESETS.items()
     }
+
+
+# NEW: Structured response formatter for Phase 3
+def format_structured_weather_response(raw_response: dict) -> dict:
+    """
+    Transform raw weather response into structured JSON format.
+    Provides both text summary AND structured data for rich UI.
+
+    Args:
+        raw_response: Output from get_full_weather_summary_by_coords()
+
+    Returns:
+        Structured response with separate sections for text, weather, news, metadata
+    """
+    current = raw_response.get("current", {})
+    forecast = raw_response.get("forecast", {})
+    alerts = raw_response.get("alerts", [])
+    news_articles = raw_response.get("news", [])
+
+    # Extract simplified current conditions
+    current_main = current.get("main", {})
+    current_weather = current.get("weather", [{}])[0]
+    current_wind = current.get("wind", {})
+
+    # Extract 3-day simplified forecast
+    forecast_list = forecast.get("list", [])
+    forecast_3day = extract_3day_forecast(forecast_list)
+
+    # Format alerts
+    formatted_alerts = format_alerts_structured(alerts)
+
+    return {
+        "text_summary": raw_response.get("summary", ""),
+        "weather": {
+            "current": {
+                "temp_c": current_main.get("temp"),
+                "temp_f": celsius_to_fahrenheit(current_main.get("temp")),
+                "feels_like_c": current_main.get("feels_like"),
+                "feels_like_f": celsius_to_fahrenheit(current_main.get("feels_like")),
+                "conditions": current_weather.get("description", "").title(),
+                "conditions_code": current_weather.get("main", ""),
+                "icon": map_weather_icon(current_weather.get("main", "")),
+                "humidity": current_main.get("humidity"),
+                "pressure": current_main.get("pressure"),
+                "wind_speed_ms": current_wind.get("speed"),
+                "wind_speed_kmh": round(current_wind.get("speed", 0) * 3.6, 1),
+                "wind_speed_mph": round(current_wind.get("speed", 0) * 2.237, 1),
+                "wind_direction": current_wind.get("deg"),
+                "visibility_m": current.get("visibility"),
+                "clouds_percent": current.get("clouds", {}).get("all")
+            },
+            "forecast_3day": forecast_3day,
+            "alerts": formatted_alerts,
+            "air_quality": raw_response.get("air_quality", "Unknown")
+        },
+        "news": {
+            "articles": news_articles[:3],  # Top 3 articles
+            "has_context": len(news_articles) > 0,
+            "count": len(news_articles)
+        },
+        "metadata": {
+            "location": raw_response.get("location", ""),
+            "coords": raw_response.get("coords", {}),
+            "tone": raw_response.get("tone", "sarcastic"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "has_alerts": len(formatted_alerts) > 0,
+            "has_news": len(news_articles) > 0
+        },
+        # Keep raw data for debugging/advanced use
+        "raw": {
+            "current": current,
+            "forecast": forecast,
+            "alerts": alerts,
+            "history": raw_response.get("history")
+        }
+    }
+
+
+def extract_3day_forecast(forecast_list: list) -> list:
+    """
+    Extract simplified 3-day forecast from OpenWeather 5-day/3-hour forecast.
+
+    Args:
+        forecast_list: List of forecast entries from OpenWeather API
+
+    Returns:
+        List of 3 daily forecast dicts with high/low temps, conditions, icon
+    """
+    if not forecast_list:
+        return []
+
+    # Group by day
+    daily_data = {}
+
+    for entry in forecast_list[:24]:  # Look at next 72 hours (3 days)
+        dt = datetime.fromtimestamp(entry["dt"], tz=timezone.utc)
+        date_key = dt.strftime("%Y-%m-%d")
+
+        if date_key not in daily_data:
+            daily_data[date_key] = {
+                "date": date_key,
+                "day_name": dt.strftime("%A"),
+                "temps": [],
+                "conditions": [],
+                "weather_codes": []
+            }
+
+        daily_data[date_key]["temps"].append(entry["main"]["temp"])
+        daily_data[date_key]["conditions"].append(entry["weather"][0]["description"])
+        daily_data[date_key]["weather_codes"].append(entry["weather"][0]["main"])
+
+    # Build 3-day forecast
+    result = []
+    for date_key in sorted(daily_data.keys())[:3]:
+        day = daily_data[date_key]
+
+        # Most common condition for the day
+        most_common_code = max(set(day["weather_codes"]), key=day["weather_codes"].count)
+        most_common_desc = max(set(day["conditions"]), key=day["conditions"].count)
+
+        result.append({
+            "date": day["date"],
+            "day": day["day_name"],
+            "temp_high_c": round(max(day["temps"]), 1),
+            "temp_high_f": celsius_to_fahrenheit(max(day["temps"])),
+            "temp_low_c": round(min(day["temps"]), 1),
+            "temp_low_f": celsius_to_fahrenheit(min(day["temps"])),
+            "conditions": most_common_desc.title(),
+            "conditions_code": most_common_code,
+            "icon": map_weather_icon(most_common_code)
+        })
+
+    return result
+
+
+def format_alerts_structured(alerts: list) -> list:
+    """
+    Format weather alerts into structured format.
+
+    Args:
+        alerts: Raw alerts from WeatherAPI
+
+    Returns:
+        List of formatted alert dicts
+    """
+    if not alerts:
+        return []
+
+    formatted = []
+    for alert in alerts[:5]:  # Limit to 5 most important
+        formatted.append({
+            "type": alert.get("event", "Weather Alert"),
+            "severity": determine_alert_severity(alert.get("event", "")),
+            "headline": alert.get("headline", alert.get("event", "")),
+            "description": alert.get("desc", "")[:300],  # Truncate long descriptions
+            "start": alert.get("effective", ""),
+            "end": alert.get("expires", ""),
+            "area": alert.get("area", ""),
+            "urgency": alert.get("urgency", "Unknown")
+        })
+
+    return formatted
+
+
+def determine_alert_severity(event_name: str) -> str:
+    """Determine severity level from alert event name."""
+    event_lower = event_name.lower()
+
+    if any(word in event_lower for word in ["warning", "tornado", "hurricane", "severe"]):
+        return "high"
+    elif any(word in event_lower for word in ["watch", "advisory", "flood"]):
+        return "moderate"
+    else:
+        return "low"
+
+
+def map_weather_icon(weather_code: str) -> str:
+    """
+    Map OpenWeather condition codes to emoji icons.
+
+    Args:
+        weather_code: OpenWeather main weather condition (e.g., "Rain", "Clear")
+
+    Returns:
+        Emoji representing the weather condition
+    """
+    icon_map = {
+        "Clear": "☀️",
+        "Clouds": "☁️",
+        "Rain": "🌧️",
+        "Drizzle": "🌦️",
+        "Thunderstorm": "⛈️",
+        "Snow": "❄️",
+        "Mist": "🌫️",
+        "Smoke": "💨",
+        "Haze": "🌫️",
+        "Dust": "💨",
+        "Fog": "🌫️",
+        "Sand": "💨",
+        "Ash": "🌋",
+        "Squall": "💨",
+        "Tornado": "🌪️"
+    }
+
+    return icon_map.get(weather_code, "🌤️")
