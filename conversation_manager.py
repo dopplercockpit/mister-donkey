@@ -14,7 +14,7 @@ class ConversationManager:
     Supports session management, history storage, and cleanup.
     """
     
-    def __init__(self, storage_dir="/home/claude/conversation_sessions", max_age_minutes=60):
+    def __init__(self, storage_dir=os.getenv("CONVERSATION_STORAGE_DIR", "./conversation_sessions"), max_age_minutes=60):
         self.storage_dir = storage_dir
         self.max_age_minutes = max_age_minutes
         self.sessions: Dict[str, Dict] = {}

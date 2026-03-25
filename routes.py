@@ -123,22 +123,27 @@ def get_tones():
     """GET /tones - List available personality tones"""
     from dopplertower_engine import TONE_PRESETS
 
+    emoji_map = {
+        "sarcastic": "🙄",
+        "pirate": "🏴‍☠️",
+        "professional": "📊",
+        "hippie": "☮️",
+        "drill_sergeant": "🎖️",
+        "gen_z": "💅",
+        "noir_detective": "🕵️",
+        "shakespeare": "🎭"
+    }
+
     tones = []
     for key, config in TONE_PRESETS.items():
         tones.append({
             "id": key,
             "name": config.get("name", key.replace("_", " ").title()),
-            "description": config["system_prompt"][:150] + "...",
-            "emoji": {
-                "sarcastic": "🙄",
-                "pirate": "🏴‍☠️",
-                "professional": "📊",
-                "hippie": "☮️",
-                "drill_sergeant": "🎖️",
-                "gen_z": "💅",
-                "noir_detective": "🕵️",
-                "shakespeare": "🎭"
-            }.get(key, "🌦️")
+            "description": config.get("short_description", config["system_prompt"][:100] + "..."),
+            "emoji": emoji_map.get(key, "🌦️"),
+            "character_slug": key.replace("_", "-"),
+            "image": f"/characters/{key.replace('_', '-')}.png",
+            "is_default": key == "sarcastic"
         })
 
     return jsonify({
