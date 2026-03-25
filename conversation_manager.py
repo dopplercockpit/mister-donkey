@@ -29,11 +29,24 @@ class ConversationManager:
         """Load sessions from disk on startup"""
         try:
             session_files = [f for f in os.listdir(self.storage_dir) if f.endswith('.json')]
+            loaded_count = 0
+            skipped_count = 0
+
             for file in session_files:
                 session_id = file.replace('.json', '')
+
+                # Skip old timestamp-based session IDs (format: session_1234567890123)
+                # Only load new format: DDMMYYXX (8 digits)
+                if session_id.startswith('session_'):
+                    print(f"⏭️ Skipping old session format: {session_id}")
+                    skipped_count += 1
+                    continue
+
                 with open(os.path.join(self.storage_dir, file), 'r') as f:
                     self.sessions[session_id] = json.load(f)
-            print(f"✅ Loaded {len(self.sessions)} conversation sessions")
+                    loaded_count += 1
+
+            print(f"✅ Loaded {loaded_count} conversation sessions (skipped {skipped_count} old format)")
         except Exception as e:
             print(f"⚠️ Failed to load sessions: {e}")
     
