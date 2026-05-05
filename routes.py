@@ -2,7 +2,7 @@
 # Fixes: Added tone selector and conversation history support
 
 from datetime import datetime
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, redirect, url_for
 from flask_cors import cross_origin
 import traceback
 import os
@@ -15,7 +15,7 @@ from config import ENV
 from geo_utils_helper import reverse_geolocate
 
 # Main logic to process the weather prompt
-from process_app_prompt import process_prompt_from_app
+from process_app_prompt import process_prompt_from_app_structured
 
 # Legacy "agent" database functions
 from agent_db import add_agent, get_agents
@@ -306,17 +306,17 @@ def handle_prompt():
 
     # 4) Process the prompt with tone and conversation
     try:
-        result = process_prompt_from_app(
-            modified_prompt, 
+        result = process_prompt_from_app_structured(
+            modified_prompt,
             location=location,
-            tone=tone,  # NEW
-            conversation_history=conversation_history  # NEW
+            tone=tone,
+            conversation_history=conversation_history
         )
-        
+
         # Add message to conversation history
         if session_id:
             add_message_to_conversation(session_id, "user", user_prompt)
-            add_message_to_conversation(session_id, "assistant", result.get("summary", ""))
+            add_message_to_conversation(session_id, "assistant", result.get("text_summary", ""))
             result["session_id"] = session_id
             result["conversation_length"] = len(get_conversation(session_id))
         
@@ -370,191 +370,53 @@ def handle_prompt():
 @bp.route("/prompt/structured", methods=["POST"])
 @cross_origin()
 def handle_prompt_structured():
+    """POST /prompt/structured - 308 permanent redirect to /prompt (identical response)."""
+    return redirect(url_for("routes.handle_prompt"), 308)
+
+
+@bp.route("/vitamin-d", methods=["POST"])
+@cross_origin()
+def vitamin_d():
     """
-    POST /prompt/structured - Returns structured JSON weather response.
-
-    NEW in Phase 3:
-    - Returns weather data in structured format with separate sections
-    - Includes text_summary, weather object, news array, metadata
-    - Perfect for building rich UI with weather cards
-    - All features from /prompt endpoint available
-
-    Request Body:
-        {
-            "prompt": "Weather in New York",
-            "location": {"lat": 40.7, "lon": -74.0},  // optional
-            "tone": "sarcastic",  // optional
-            "session_id": "uuid",  // optional for conversation
-            "auto": false,  // optional
-            "debug": false  // optional
-        }
-
-    Response Format:
-        {
-            "text_summary": "GPT-generated text with personality...",
-            "weather": {
-                "current": {
-                    "temp_c": 15,
-                    "temp_f": 59,
-                    "conditions": "Partly Cloudy",
-                    "icon": "⛅",
-                    "humidity": 65,
-                    ...
-                },
-                "forecast_3day": [
-                    {
-                        "day": "Monday",
-                        "temp_high_c": 18,
-                        "temp_low_c": 12,
-                        "conditions": "Sunny",
-                        "icon": "☀️"
-                    },
-                    ...
-                ],
-                "alerts": [...],
-                "air_quality": "🟢 Good"
-            },
-            "news": {
-                "articles": [...],
-                "has_context": true,
-                "count": 3
-            },
-            "metadata": {
-                "location": "New York, NY, USA",
-                "coords": {"lat": 40.7, "lon": -74.0},
-                "tone": "sarcastic",
-                "timestamp": "2026-01-06T...",
-                "has_alerts": false,
-                "has_news": true
-            },
-            "raw": {  // Full API responses for advanced use
-                "current": {...},
-                "forecast": {...}
-            }
-        }
+    POST /vitamin-d
+    Body: { lat, lon, skin_type (1-6 Fitzpatrick), session_id (optional) }
+    Returns: { vitamin_d_index, synthesis_minutes, recommendation,
+               uv_index, sun_elevation, cloud_factor, skin_type_label, ... }
     """
-    # Import process function with structured support
-    from process_app_prompt import process_prompt_from_app_structured
+    from vitamin_d_forecast import get_vitamin_d_forecast
 
     data = request.get_json() or {}
-    user_prompt = (data.get("prompt") or "").strip()
-    location = data.get("location") or {}
-    is_auto_request = data.get("auto", False)
-    debug_requested = bool(data.get("debug", False))
-
-    # Tone and conversation parameters
-    tone = data.get("tone", "sarcastic")
+    lat = data.get("lat")
+    lon = data.get("lon")
+    skin_type = data.get("skin_type", 3)
     session_id = data.get("session_id")
 
-    # Validate tone
-    from dopplertower_engine import TONE_PRESETS
-    if tone not in TONE_PRESETS:
-        tone = "sarcastic"
-        print(f"⚠️ Invalid tone '{data.get('tone')}', using default: sarcastic")
+    if lat is None or lon is None:
+        return jsonify({"error": "Missing required fields: lat, lon"}), 400
 
-    # Extract location data
-    lat = location.get("lat")
-    lon = location.get("lon")
-
-    # Logging
-    if debug_requested or is_auto_request:
-        print(f"\n🔍 STRUCTURED endpoint: auto={is_auto_request}, debug={debug_requested}, tone={tone}")
-        print(f"📝 Input prompt: '{user_prompt}'")
-        print(f"📍 Location data: {json.dumps(location)}")
-        if session_id:
-            print(f"💬 Session ID: {session_id}")
-        print("-" * 50)
-
-    # City Resolver preprocessing
     try:
-        modified_prompt, resolved_city, resolver_metadata = resolve_city_context(user_prompt, location)
+        lat = float(lat)
+        lon = float(lon)
+    except (ValueError, TypeError):
+        return jsonify({"error": "lat and lon must be numeric"}), 400
+
+    try:
+        skin_type = int(skin_type)
+        if not 1 <= skin_type <= 6:
+            raise ValueError
+    except (ValueError, TypeError):
+        return jsonify({"error": "skin_type must be an integer 1–6"}), 400
+
+    if session_id:
+        print(f"☀️ /vitamin-d request | session={session_id} | ({lat:.3f}, {lon:.3f}) | skin={skin_type}")
+
+    try:
+        result = get_vitamin_d_forecast(lat, lon, skin_type)
+        return jsonify(result)
     except Exception as ex:
         error_trace = traceback.format_exc()
-        print(f"❌ ERROR in /prompt/structured:\n{error_trace}")
-
+        print(f"❌ ERROR in /vitamin-d:\n{error_trace}")
         return jsonify({
             "error": str(ex),
-            "error_type": type(ex).__name__,
             "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
-            "timestamp": datetime.now().isoformat()
-        }), 500
-
-    # Reverse geocoding fallback
-    if lat is not None and lon is not None and not resolved_city:
-        try:
-            fallback_city = reverse_geolocate(lat, lon)
-        except Exception as ex:
-            print(f"⚠️ Reverse geocode error: {str(ex)}")
-            fallback_city = None
-
-        if fallback_city:
-            clean_city = fallback_city.split(",")[0].strip()
-            if clean_city.lower() not in modified_prompt.lower():
-                modified_prompt = f"{modified_prompt} in {clean_city}" if modified_prompt else f"Weather in {clean_city}"
-                print(f"🔄 Structured endpoint: Injected fallback city: '{modified_prompt}'")
-
-    # Validate prompt
-    if not modified_prompt:
-        error_msg = "Missing 'prompt' in request."
-        if is_auto_request:
-            error_msg = "Auto-loading failed: Could not determine location or generate prompt."
-        return jsonify({"error": error_msg}), 400
-
-    # Handle conversation history
-    conversation_history = None
-    if session_id:
-        conversation_history = get_conversation(session_id)
-        print(f"💬 Loaded {len(conversation_history)} previous messages")
-
-    # Process with STRUCTURED flag
-    try:
-        result = process_prompt_from_app_structured(
-            modified_prompt,
-            location=location,
-            tone=tone,
-            conversation_history=conversation_history
-        )
-
-        # Add message to conversation history
-        if session_id:
-            add_message_to_conversation(session_id, "user", user_prompt)
-            add_message_to_conversation(session_id, "assistant", result.get("text_summary", ""))
-            result["session_id"] = session_id
-            result["conversation_length"] = len(get_conversation(session_id))
-
-        # Add metadata
-        if debug_requested or is_auto_request:
-            result["debug"] = True
-            result["debug_info"] = {
-                "auto_request": is_auto_request,
-                "debug_requested": debug_requested,
-                "original_prompt": user_prompt,
-                "modified_prompt": modified_prompt,
-                "resolver_metadata": resolver_metadata,
-                "tone_used": tone,
-                "has_conversation_history": conversation_history is not None,
-                "endpoint": "structured"
-            }
-
-        if is_auto_request:
-            result["auto_loaded"] = True
-            result["auto_prompt"] = modified_prompt
-            print(f"🤖 Structured auto-load successful: '{modified_prompt}'")
-
-        return jsonify(result)
-
-    except Exception as ex:
-        error_msg = str(ex)
-        error_trace = traceback.format_exc()
-
-        if is_auto_request:
-            print(f"🛑 Structured auto-load failed: {error_msg}")
-            error_msg = f"Auto-loading failed: {error_msg}"
-
-        print(f"❌ ERROR in /prompt/structured:\n{error_trace}")
-
-        return jsonify({
-            "error": error_msg,
-            "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
-            "endpoint": "structured"
         }), 500

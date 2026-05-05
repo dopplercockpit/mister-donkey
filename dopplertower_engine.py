@@ -4,6 +4,7 @@
 
 import requests
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from openai import OpenAI
 import os
 import math
@@ -21,6 +22,54 @@ OPENWEATHER_URL = "http://api.openweathermap.org/data/2.5"
 WEATHERAPI_URL = "http://api.weatherapi.com/v1"
 
 from config import OPENAI_MODEL  # shared config
+
+# ─── TTL Cache ────────────────────────────────────────────────────────────────
+_CACHE_TTL = 600  # 10 minutes
+
+_cache: dict = {}
+_stats: dict = {"hits": 0, "misses": 0, "by_endpoint": {}}
+
+
+def _ttl_cache(name: str, ttl: int = _CACHE_TTL):
+    """Decorator: caches (lat, lon) results with a TTL, keyed by (name, round(lat,2), round(lon,2))."""
+    _stats["by_endpoint"][name] = {"hits": 0, "misses": 0}
+
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(lat: float, lon: float):
+            key = (name, round(lat, 2), round(lon, 2))
+            entry = _cache.get(key)
+            if entry is not None:
+                data, ts = entry
+                if time.time() - ts < ttl:
+                    _stats["hits"] += 1
+                    _stats["by_endpoint"][name]["hits"] += 1
+                    print(f"💾 Cache hit: {name} ({round(lat, 2):.2f}, {round(lon, 2):.2f})")
+                    return data
+                del _cache[key]
+            _stats["misses"] += 1
+            _stats["by_endpoint"][name]["misses"] += 1
+            data = fn(lat, lon)
+            _cache[key] = (data, time.time())
+            return data
+        return wrapper
+    return decorator
+
+
+def cache_stats() -> dict:
+    """Return cache hit/miss counts and per-endpoint breakdown."""
+    total = _stats["hits"] + _stats["misses"]
+    return {
+        "hits": _stats["hits"],
+        "misses": _stats["misses"],
+        "total_requests": total,
+        "hit_rate_pct": round(_stats["hits"] / total * 100, 1) if total else 0.0,
+        "cached_entries": len(_cache),
+        "ttl_seconds": _CACHE_TTL,
+        "by_endpoint": _stats["by_endpoint"],
+    }
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Setup logger
 logger = setup_logger("mister_donkey.engine") 
@@ -123,14 +172,17 @@ def celsius_to_fahrenheit(c):
 def convert_wind_speed(mps):
     return round(mps * 3.6), round(mps * 2.23694) if isinstance(mps, (int, float)) else ("N/A", "N/A")
 
+@_ttl_cache("openweather_current")
 def get_openweather_current(lat, lon):
     url = f"{OPENWEATHER_URL}/weather?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
     return requests.get(url).json()
 
+@_ttl_cache("openweather_forecast")
 def get_openweather_forecast(lat, lon):
     url = f"{OPENWEATHER_URL}/forecast?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
     return requests.get(url).json()
 
+@_ttl_cache("air_quality")
 def get_air_quality(lat, lon):
     url = f"{OPENWEATHER_URL}/air_pollution?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}"
     data = requests.get(url).json()
@@ -139,6 +191,7 @@ def get_air_quality(lat, lon):
         return aqi_map.get(data["list"][0]["main"]["aqi"], "Unknown")
     return "Unknown"
 
+@_ttl_cache("weather_alerts")
 def get_weather_alerts(lat, lon):
     url = f"{WEATHERAPI_URL}/alerts.json?key={WEATHERAPI_KEY}&q={lat},{lon}"
     response = requests.get(url)
