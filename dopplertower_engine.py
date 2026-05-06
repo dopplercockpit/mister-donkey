@@ -482,6 +482,7 @@ def format_structured_weather_response(raw_response: dict) -> dict:
 
     return {
         "text_summary": raw_response.get("summary", ""),
+        "summary": raw_response.get("summary", ""),       # legacy alias
         "weather": {
             "current": {
                 "temp_c": current_main.get("temp"),
