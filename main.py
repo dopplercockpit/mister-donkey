@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import json
+import uuid
 import traceback
 import requests as http
 
@@ -45,8 +46,10 @@ from threading import Thread
 from weather_agent import monitor_all_sessions_loop
 from weather_agent import weather_agent_bp
 from conversation_manager import conversation_manager
+from extensions import limiter
 
 app = Flask(__name__)
+limiter.init_app(app)
 
 # ========================================
 # CORS Configuration
@@ -59,7 +62,7 @@ if ENV in ("dev", "development"):
              "origins": "*",
              "allow_headers": ["Content-Type", "Authorization"],
              "methods": ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
-             "expose_headers": ["Content-Type"],
+             "expose_headers": ["Content-Type", "X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"],
              "supports_credentials": True
          }})
     print("⚠️ CORS: Development mode - allowing all origins")
@@ -75,42 +78,61 @@ else:
              "origins": allowed_origins,
              "allow_headers": ["Content-Type", "Authorization"],
              "methods": ["GET", "POST", "OPTIONS"],
-             "expose_headers": ["Content-Type"],
+             "expose_headers": ["Content-Type", "X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"],
              "supports_credentials": True
          }})
     print(f"🔒 CORS: Production mode - allowing: {allowed_origins}")
 
 # ========================================
-# Request/Response Logging
+# Request/Response Logging + Request ID
 # ========================================
 _SILENT_PATHS = {"/health", "/health/deep"}
 
 @app.before_request
 def log_request():
     g.start_time = time.time()
+    g.request_id = str(uuid.uuid4())
     if request.path in _SILENT_PATHS:
         return
+    rid = f"[REQ-{g.request_id[:8]}]"
     print(f"\n{'='*60}")
-    print(f"📥 REQUEST [{datetime.now().strftime('%H:%M:%S')}]")
+    print(f"📥 {rid} REQUEST [{datetime.now().strftime('%H:%M:%S')}]")
     print(f"{'='*60}")
-    print(f"Method: {request.method}")
-    print(f"Path: {request.path}")
-    print(f"Origin: {request.headers.get('Origin', 'No origin')}")
+    print(f"{rid} Method: {request.method}")
+    print(f"{rid} Path: {request.path}")
+    print(f"{rid} Origin: {request.headers.get('Origin', 'No origin')}")
     if request.is_json:
         try:
             body = request.get_json()
-            print(f"Body: {json.dumps(body, indent=2)}")
+            print(f"{rid} Body: {json.dumps(body, indent=2)}")
         except Exception:
             pass
 
 @app.after_request
 def log_response(response):
+    req_id = g.get("request_id", "")
+    # Always attach the header so every response carries it
+    response.headers["X-Request-ID"] = req_id
+
+    # Inject request_id into 4xx/5xx JSON bodies so error messages are reportable
+    if response.status_code >= 400 and response.is_json:
+        try:
+            body = response.get_json(silent=True)
+            if isinstance(body, dict) and "request_id" not in body:
+                body["request_id"] = req_id
+                response.set_data(json.dumps(body))
+                response.content_type = "application/json"
+        except Exception:
+            pass
+
     if request.path in _SILENT_PATHS:
         return response
+
+    rid = f"[REQ-{req_id[:8]}]" if req_id else ""
     duration = time.time() - g.get("start_time", time.time())
     print(f"\n{'='*60}")
-    print(f"📤 RESPONSE [{datetime.now().strftime('%H:%M:%S')}] - {duration:.3f}s")
-    print(f"Status: {response.status}")
+    print(f"📤 {rid} RESPONSE [{datetime.now().strftime('%H:%M:%S')}] - {duration:.3f}s")
+    print(f"{rid} Status: {response.status}")
     print(f"{'='*60}\n")
     return response
 
@@ -121,8 +143,10 @@ def log_response(response):
 def handle_error(error):
     error_trace = traceback.format_exc()
     error_id = f"ERR-{int(time.time())}"
+    req_id = g.get("request_id", "unknown")
+    rid = f"[REQ-{req_id[:8]}]"
     print(f"\n{'🚨'*30}")
-    print(f"ERROR [{error_id}]")
+    print(f"🚨 {rid} ERROR [{error_id}]")
     print(error_trace)
     print(f"{'🚨'*30}\n")
     if ENV == "dev":
@@ -130,14 +154,33 @@ def handle_error(error):
             "error": str(error),
             "error_type": type(error).__name__,
             "error_id": error_id,
+            "request_id": req_id,
             "trace": error_trace,
             "timestamp": datetime.now().isoformat()
         }), 500
     return jsonify({
         "error": "Internal server error",
         "error_id": error_id,
+        "request_id": req_id,
         "timestamp": datetime.now().isoformat()
     }), 500
+
+# ========================================
+# Rate Limit Handler
+# ========================================
+@app.errorhandler(429)
+def rate_limit_exceeded(e):
+    req_id = g.get("request_id", "unknown")
+    rid = f"[REQ-{req_id[:8]}]"
+    print(f"⚠️ {rid} Rate limit exceeded: {request.method} {request.path} — {e.description}")
+    response = jsonify({
+        "error": "Slow down, the donkey needs a break.",
+        "retry_after": 60,
+        "request_id": req_id,
+    })
+    response.status_code = 429
+    response.headers["Retry-After"] = "60"
+    return response
 
 # ========================================
 # Register Blueprints

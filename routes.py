@@ -2,11 +2,13 @@
 # Fixes: Added tone selector and conversation history support
 
 from datetime import datetime
-from flask import Blueprint, request, jsonify, redirect, url_for
+from flask import Blueprint, request, jsonify, redirect, url_for, g
 from flask_cors import cross_origin
 import traceback
 import os
 import json
+
+from extensions import limiter
 
 # Configuration
 from config import ENV
@@ -198,6 +200,7 @@ def clear_conversation(session_id: str):
 
 @bp.route("/prompt", methods=["POST"])
 @cross_origin()
+@limiter.shared_limit("20 per minute", scope="prompt")
 def handle_prompt():
     """
     POST /prompt - Main weather prompt endpoint.
@@ -369,6 +372,7 @@ def handle_prompt():
 
 @bp.route("/prompt/structured", methods=["POST"])
 @cross_origin()
+@limiter.shared_limit("20 per minute", scope="prompt")
 def handle_prompt_structured():
     """POST /prompt/structured - 308 permanent redirect to /prompt (identical response)."""
     return redirect(url_for("routes.handle_prompt"), 308)
@@ -376,6 +380,7 @@ def handle_prompt_structured():
 
 @bp.route("/vitamin-d", methods=["POST"])
 @cross_origin()
+@limiter.limit("10 per minute")
 def vitamin_d():
     """
     POST /vitamin-d
