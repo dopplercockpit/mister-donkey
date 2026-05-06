@@ -207,10 +207,64 @@ def get_weather_alerts(lat, lon):
     alerts = data.get("alerts", {}).get("alert", [])
     return alerts if alerts else []
 
+@_ttl_cache("weatherapi_forecast")
 def get_three_day_forecast(lat, lon):
     url = f"{WEATHERAPI_URL}/forecast.json?key={WEATHERAPI_KEY}&q={lat},{lon}&days=3"
-    response = requests.get(url)
-    return response.json()
+    try:
+        return requests.get(url, timeout=8).json()
+    except Exception:
+        return {}
+
+
+def get_hourly_forecast(lat: float, lon: float) -> list:
+    """Return the next 12 hours of WeatherAPI hourly data as processed dicts.
+
+    Re-uses the cached get_three_day_forecast result so no extra HTTP call.
+    """
+    data = get_three_day_forecast(lat, lon)
+    now = datetime.now()
+    now_epoch = int(now.timestamp())
+
+    all_hours: list = []
+    for day in data.get("forecast", {}).get("forecastday", [])[:2]:
+        all_hours.extend(day.get("hour", []))
+
+    # Keep only hours from the current hour onward (allow 30-min past)
+    future = [h for h in all_hours if h.get("time_epoch", 0) >= now_epoch - 1800]
+
+    result = []
+    for h in future[:12]:
+        cond = h.get("condition", {})
+        time_str = h.get("time", "")
+        try:
+            dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M")
+            hi = dt.hour
+            if hi == 0:
+                label = "12am"
+            elif hi < 12:
+                label = f"{hi}am"
+            elif hi == 12:
+                label = "12pm"
+            else:
+                label = f"{hi - 12}pm"
+            is_current = -1800 < (dt - now).total_seconds() < 3600
+        except Exception:
+            label = time_str[-5:] if len(time_str) >= 5 else "?"
+            is_current = False
+
+        precip = max(int(h.get("chance_of_rain", 0)), int(h.get("chance_of_snow", 0)))
+        result.append({
+            "time": time_str,
+            "hour_label": label,
+            "temp_c": h.get("temp_c"),
+            "temp_f": h.get("temp_f"),
+            "conditions": cond.get("text", ""),
+            "condition_code": cond.get("code"),
+            "precip_chance": precip,
+            "is_current": is_current,
+        })
+
+    return result
 
 def get_historical_weather(lat, lon, date_str):
     url = f"{WEATHERAPI_URL}/history.json?key={WEATHERAPI_KEY}&q={lat},{lon}&dt={date_str}"
@@ -394,9 +448,10 @@ User prompt context:
         "air_quality": aqi,
         "alerts": alerts,
         "history": history,
-        "news": news_articles,  # NEW: Include news articles in response
+        "news": news_articles,
         "summary": gpt_summary,
-        "tone": tone  # Return the tone that was used
+        "tone": tone,
+        "hourly": get_hourly_forecast(lat, lon),  # next 12 hours from WeatherAPI cache
     }
 
     # Return structured format if requested, otherwise return legacy format
@@ -437,6 +492,87 @@ def get_full_weather_summary(
     result["city"] = city_info["full_name"]
     
     return result
+
+
+def generate_summary_stream(
+    lat: float,
+    lon: float,
+    display_name: str = None,
+    user_prompt: str = "",
+    tone: str = "sarcastic",
+    conversation_history: list = None,
+):
+    """Stream the GPT weather summary as raw text tokens.
+
+    All upstream API calls use the TTL cache so there's no duplicate fetching
+    when this is called shortly after get_full_weather_summary_by_coords.
+
+    Yields: str tokens (not SSE-wrapped — the route handles formatting).
+    """
+    from geo_utils_helper import reverse_geolocate
+
+    current = get_openweather_current(lat, lon)
+    forecast = get_openweather_forecast(lat, lon)
+    aqi = get_air_quality(lat, lon)
+    alerts = get_weather_alerts(lat, lon)
+    forecast_text = get_three_day_forecast(lat, lon)
+    hist_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    history = get_historical_weather(lat, lon, hist_date)
+
+    if not display_name:
+        try:
+            display_name = reverse_geolocate(lat, lon)
+        except Exception:
+            display_name = f"{lat:.3f}, {lon:.3f}"
+
+    country_code = extract_country_code(display_name)
+    news_articles = get_location_news(display_name, country_code=country_code, max_results=3)
+    news_context = format_news_for_prompt(news_articles)
+
+    alerts_summary_forecast = "\n".join(forecast_text) if isinstance(forecast_text, list) else str(forecast_text)
+    alerts_summary_severe = parse_weather_alerts({"alert": alerts})
+    alerts_summary = "\n".join(filter(None, [alerts_summary_severe, alerts_summary_forecast]))
+    news_section = f"\n\nRecent News Headlines:\n{news_context}" if news_context else ""
+
+    summary_input = f"""Location: {display_name}
+Lat/Lon: {lat}, {lon}
+
+Current:
+{current}
+
+Forecast (5-day):
+{forecast}
+
+Air Quality:
+{aqi}
+
+Alerts:
+{alerts_summary}
+
+Recent History (yesterday):
+{history}{news_section}
+
+User prompt context:
+{user_prompt}
+"""
+
+    tone_config = TONE_PRESETS.get(tone, TONE_PRESETS["sarcastic"])
+    messages = [{"role": "system", "content": tone_config["system_prompt"]}]
+    if conversation_history:
+        messages.extend(conversation_history)
+    messages.append({"role": "user", "content": summary_input})
+
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    stream = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=messages,
+        max_tokens=906,
+        stream=True,
+    )
+    for chunk in stream:
+        token = chunk.choices[0].delta.content
+        if token is not None:
+            yield token
 
 
 # NEW: Helper function to get available tones
@@ -484,6 +620,7 @@ def format_structured_weather_response(raw_response: dict) -> dict:
         "text_summary": raw_response.get("summary", ""),
         "summary": raw_response.get("summary", ""),       # legacy alias
         "weather": {
+            "hourly": raw_response.get("hourly", []),
             "current": {
                 "temp_c": current_main.get("temp"),
                 "temp_f": celsius_to_fahrenheit(current_main.get("temp")),

@@ -1,14 +1,17 @@
 # routes.py (UPDATED VERSION)
 # Fixes: Added tone selector and conversation history support
 
-from datetime import datetime
-from flask import Blueprint, request, jsonify, redirect, url_for, g
-from flask_cors import cross_origin
-import traceback
-import os
 import json
+import os
+import traceback
+from datetime import datetime
+
+from flask import Blueprint, Response, g, jsonify, redirect, request, stream_with_context, url_for
+from flask_cors import cross_origin
 
 from extensions import limiter
+from utils import ErrorCode, error_response
+from conversation_db import get_history_for_openai, get_history_raw, store_exchange
 
 # Configuration
 from config import ENV
@@ -72,15 +75,15 @@ def reverse_lookup():
     lon = data.get("lon")
 
     if lat is None or lon is None:
-        return jsonify({"error": "Missing 'lat' or 'lon' in request body."}), 400
+        return error_response("Missing 'lat' or 'lon' in request body.", ErrorCode.INVALID_REQUEST, 400)
 
     try:
         city_name = reverse_geolocate(lat, lon)
     except Exception as ex:
-        return jsonify({"error": f"Reverse geolocation failed: {str(ex)}"}), 500
+        return error_response(f"Reverse geolocation failed: {str(ex)}", ErrorCode.API_ERROR, 500)
 
     if not city_name:
-        return jsonify({"error": "Could not determine city from coordinates."}), 500
+        return error_response("Could not determine city from coordinates.", ErrorCode.LOCATION_NOT_FOUND, 500)
 
     return jsonify({"city": city_name})
 
@@ -91,7 +94,7 @@ def get_all_agents():
         agents = get_agents()
         return jsonify(agents)
     except Exception as ex:
-        return jsonify({"error": f"Failed to retrieve agents: {str(ex)}"}), 500
+        return error_response(f"Failed to retrieve agents: {str(ex)}", ErrorCode.INTERNAL_ERROR, 500)
 
 @bp.route("/agents", methods=["POST"])
 def add_or_update_agent():
@@ -101,11 +104,11 @@ def add_or_update_agent():
     required_fields = ["user_id", "city", "times", "timezone"]
     missing = [f for f in required_fields if f not in data]
     if missing:
-        return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
+        return error_response(f"Missing required fields: {', '.join(missing)}", ErrorCode.INVALID_REQUEST, 400)
 
     times = data.get("times")
     if not isinstance(times, list) or not all(isinstance(t, str) and ":" in t for t in times):
-        return jsonify({"error": "Field 'times' must be a list of 'HH:MM' strings."}), 400
+        return error_response("Field 'times' must be a list of 'HH:MM' strings.", ErrorCode.INVALID_REQUEST, 400)
 
     try:
         add_agent(
@@ -116,7 +119,7 @@ def add_or_update_agent():
         )
         return jsonify({"status": "Agent saved to DB!"})
     except Exception as ex:
-        return jsonify({"error": f"Failed to save agent: {str(ex)}"}), 500
+        return error_response(f"Failed to save agent: {str(ex)}", ErrorCode.INTERNAL_ERROR, 500)
 
 # NEW: Tone management endpoints
 @bp.route("/tones", methods=["GET"])
@@ -247,17 +250,12 @@ def handle_prompt():
     except Exception as ex:
         error_trace = traceback.format_exc()
         print(f"❌ ERROR in /prompt:\n{error_trace}")
-
-        # Log error to session if session_id exists
         if session_id:
             session_logger.log_error(session_id, f"City resolver error: {str(ex)}")
-
-        return jsonify({
-            "error": str(ex),
-            "error_type": type(ex).__name__,
-            "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
-            "timestamp": datetime.now().isoformat()
-        }), 500
+        return error_response(
+            str(ex), ErrorCode.INTERNAL_ERROR, 500,
+            trace=error_trace if ENV == "dev" else None,
+        )
 
     # Enhanced debugging
     if is_auto_request:
@@ -299,13 +297,13 @@ def handle_prompt():
         error_msg = "Missing 'prompt' in request. I need SOMETHING to work with."
         if is_auto_request:
             error_msg = "Auto-loading failed: Could not determine location or generate prompt."
-        return jsonify({"error": error_msg}), 400
+        return error_response(error_msg, ErrorCode.INVALID_REQUEST, 400)
 
-    # NEW: Handle conversation history
+    # Load conversation history from SQLite (last 6 exchanges = 12 messages)
     conversation_history = None
     if session_id:
-        conversation_history = get_conversation(session_id)
-        print(f"💬 Loaded {len(conversation_history)} previous messages")
+        conversation_history = get_history_for_openai(session_id, exchanges=6)
+        print(f"💬 Loaded {len(conversation_history)} messages from SQLite history")
 
     # 4) Process the prompt with tone and conversation
     try:
@@ -316,12 +314,10 @@ def handle_prompt():
             conversation_history=conversation_history
         )
 
-        # Add message to conversation history
+        # Persist exchange to SQLite
         if session_id:
-            add_message_to_conversation(session_id, "user", user_prompt)
-            add_message_to_conversation(session_id, "assistant", result.get("text_summary", ""))
+            store_exchange(session_id, user_prompt, result.get("text_summary", ""))
             result["session_id"] = session_id
-            result["conversation_length"] = len(get_conversation(session_id))
         
         # Ensure debug flag is set if either condition is true
         if debug_requested or is_auto_request:
@@ -366,8 +362,7 @@ def handle_prompt():
             error_msg = f"Auto-loading failed: {error_msg}"
 
         print(f"❌ ERROR in process_prompt_from_app:\n{error_trace}")
-
-        return jsonify({"error": error_msg, "debug_info": debug_info}), 500
+        return error_response(error_msg, ErrorCode.API_ERROR, 500, debug_info=debug_info)
 
 
 @bp.route("/prompt/structured", methods=["POST"])
@@ -397,20 +392,20 @@ def vitamin_d():
     session_id = data.get("session_id")
 
     if lat is None or lon is None:
-        return jsonify({"error": "Missing required fields: lat, lon"}), 400
+        return error_response("Missing required fields: lat, lon", ErrorCode.INVALID_REQUEST, 400)
 
     try:
         lat = float(lat)
         lon = float(lon)
     except (ValueError, TypeError):
-        return jsonify({"error": "lat and lon must be numeric"}), 400
+        return error_response("lat and lon must be numeric", ErrorCode.INVALID_REQUEST, 400)
 
     try:
         skin_type = int(skin_type)
         if not 1 <= skin_type <= 6:
             raise ValueError
     except (ValueError, TypeError):
-        return jsonify({"error": "skin_type must be an integer 1–6"}), 400
+        return error_response("skin_type must be an integer 1–6", ErrorCode.INVALID_REQUEST, 400)
 
     if session_id:
         print(f"☀️ /vitamin-d request | session={session_id} | ({lat:.3f}, {lon:.3f}) | skin={skin_type}")
@@ -421,7 +416,85 @@ def vitamin_d():
     except Exception as ex:
         error_trace = traceback.format_exc()
         print(f"❌ ERROR in /vitamin-d:\n{error_trace}")
-        return jsonify({
-            "error": str(ex),
-            "trace": error_trace if ENV == "dev" else "Enable dev mode for trace",
-        }), 500
+        return error_response(str(ex), ErrorCode.API_ERROR, 500,
+                              trace=error_trace if ENV == "dev" else None)
+
+
+@bp.route("/history/<session_id>", methods=["GET"])
+@cross_origin()
+def get_history(session_id: str):
+    """GET /history/<session_id> — last 20 exchanges as JSON."""
+    messages = get_history_raw(session_id, exchanges=20)
+    return jsonify({"session_id": session_id, "messages": messages, "count": len(messages)})
+
+
+@bp.route("/prompt/stream", methods=["POST"])
+@cross_origin()
+@limiter.shared_limit("20 per minute", scope="prompt")
+def handle_prompt_stream():
+    """POST /prompt/stream — SSE streaming version of /prompt.
+
+    Streams the GPT summary token-by-token as Server-Sent Events.
+    Each token: ``data: {escaped_token}\\n\\n``
+    End-of-stream marker: ``data: [DONE]\\n\\n``
+    """
+    import json as _json
+    from dopplertower_engine import generate_summary_stream, TONE_PRESETS
+
+    data = request.get_json() or {}
+    user_prompt = (data.get("prompt") or "").strip()
+    location    = data.get("location") or {}
+    tone        = data.get("tone", "sarcastic")
+    session_id  = data.get("session_id")
+
+    if tone not in TONE_PRESETS:
+        tone = "sarcastic"
+
+    lat = location.get("lat")
+    lon = location.get("lon")
+
+    if not user_prompt:
+        return error_response("Missing prompt", ErrorCode.INVALID_REQUEST, 400)
+    if lat is None or lon is None:
+        return error_response("Missing location coordinates", ErrorCode.INVALID_REQUEST, 400)
+
+    conv_history = get_history_for_openai(session_id, exchanges=6) if session_id else None
+    req_id = g.get("request_id", "")
+
+    print(f"🌊 /prompt/stream | session={session_id} | tone={tone}")
+
+    def generate():
+        # First event carries the request ID so the client can log it
+        yield f"event: meta\ndata: {_json.dumps({'request_id': req_id})}\n\n"
+        accumulated: list[str] = []
+        try:
+            for token in generate_summary_stream(
+                lat, lon,
+                user_prompt=user_prompt,
+                tone=tone,
+                conversation_history=conv_history,
+            ):
+                accumulated.append(token)
+                # Escape newlines — SSE data lines must not contain raw \n
+                safe = token.replace("\n", "\\n")
+                yield f"data: {safe}\n\n"
+        except Exception as ex:
+            yield f"event: error\ndata: {_json.dumps({'error': str(ex)})}\n\n"
+            return
+
+        # Persist exchange after stream completes
+        if session_id and accumulated:
+            full_text = "".join(accumulated)
+            store_exchange(session_id, user_prompt, full_text)
+
+        yield "data: [DONE]\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx response buffering
+            "X-Request-ID": req_id,
+        },
+    )

@@ -47,9 +47,11 @@ from weather_agent import monitor_all_sessions_loop
 from weather_agent import weather_agent_bp
 from conversation_manager import conversation_manager
 from extensions import limiter
+from conversation_db import init_db as _init_conversation_db
 
 app = Flask(__name__)
 limiter.init_app(app)
+_init_conversation_db()
 
 # ========================================
 # CORS Configuration
