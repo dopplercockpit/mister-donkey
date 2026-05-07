@@ -13,6 +13,7 @@ from PIL import Image
 import time
 from news_fetcher import get_location_news, format_news_for_prompt, extract_country_code
 from logger_config import setup_logger, log_llm_call
+from weather_normalizer import normalize_openweather_current
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -604,11 +605,6 @@ def format_structured_weather_response(raw_response: dict) -> dict:
     alerts = raw_response.get("alerts", [])
     news_articles = raw_response.get("news", [])
 
-    # Extract simplified current conditions
-    current_main = current.get("main", {})
-    current_weather = current.get("weather", [{}])[0]
-    current_wind = current.get("wind", {})
-
     # Extract 3-day simplified forecast
     forecast_list = forecast.get("list", [])
     forecast_3day = extract_3day_forecast(forecast_list)
@@ -621,23 +617,7 @@ def format_structured_weather_response(raw_response: dict) -> dict:
         "summary": raw_response.get("summary", ""),       # legacy alias
         "weather": {
             "hourly": raw_response.get("hourly", []),
-            "current": {
-                "temp_c": current_main.get("temp"),
-                "temp_f": celsius_to_fahrenheit(current_main.get("temp")),
-                "feels_like_c": current_main.get("feels_like"),
-                "feels_like_f": celsius_to_fahrenheit(current_main.get("feels_like")),
-                "conditions": current_weather.get("description", "").title(),
-                "conditions_code": current_weather.get("main", ""),
-                "icon": map_weather_icon(current_weather.get("main", "")),
-                "humidity": current_main.get("humidity"),
-                "pressure": current_main.get("pressure"),
-                "wind_speed_ms": current_wind.get("speed"),
-                "wind_speed_kmh": round(current_wind.get("speed", 0) * 3.6, 1),
-                "wind_speed_mph": round(current_wind.get("speed", 0) * 2.237, 1),
-                "wind_direction": current_wind.get("deg"),
-                "visibility_m": current.get("visibility"),
-                "clouds_percent": current.get("clouds", {}).get("all")
-            },
+            "current": normalize_openweather_current(current).to_dict(),
             "forecast_3day": forecast_3day,
             "alerts": formatted_alerts,
             "air_quality": raw_response.get("air_quality", "Unknown")
@@ -691,12 +671,15 @@ def extract_3day_forecast(forecast_list: list) -> list:
                 "day_name": dt.strftime("%A"),
                 "temps": [],
                 "conditions": [],
-                "weather_codes": []
+                "weather_codes": [],
+                "weather_ids": []
             }
 
         daily_data[date_key]["temps"].append(entry["main"]["temp"])
-        daily_data[date_key]["conditions"].append(entry["weather"][0]["description"])
-        daily_data[date_key]["weather_codes"].append(entry["weather"][0]["main"])
+        weather = entry.get("weather", [{}])[0]
+        daily_data[date_key]["conditions"].append(weather.get("description", ""))
+        daily_data[date_key]["weather_codes"].append(weather.get("main", ""))
+        daily_data[date_key]["weather_ids"].append(weather.get("id"))
 
     # Build 3-day forecast
     result = []
@@ -705,6 +688,8 @@ def extract_3day_forecast(forecast_list: list) -> list:
 
         # Most common condition for the day
         most_common_code = max(set(day["weather_codes"]), key=day["weather_codes"].count)
+        condition_ids = [code for code in day["weather_ids"] if code is not None]
+        most_common_id = max(set(condition_ids), key=condition_ids.count) if condition_ids else None
         most_common_desc = max(set(day["conditions"]), key=day["conditions"].count)
 
         result.append({
@@ -715,6 +700,8 @@ def extract_3day_forecast(forecast_list: list) -> list:
             "temp_low_c": round(min(day["temps"]), 1),
             "temp_low_f": celsius_to_fahrenheit(min(day["temps"])),
             "conditions": most_common_desc.title(),
+            "condition_main": most_common_code,
+            "condition_code": most_common_id,
             "conditions_code": most_common_code,
             "icon": map_weather_icon(most_common_code)
         })
