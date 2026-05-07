@@ -7,10 +7,23 @@ import json
 import uuid
 import traceback
 import requests as http
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
 
 # Load .env before anything else so validate_env() sees the vars
 from dotenv import load_dotenv
 load_dotenv()
+
+ENV = os.getenv("ENV", "prod").strip().lower()
+SENTRY_DSN = os.getenv("SENTRY_DSN", "").strip()
+
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[FlaskIntegration()],
+        traces_sample_rate=0.1,
+        environment=ENV,
+    )
 
 # ========================================
 # Startup Environment Validation
@@ -48,16 +61,25 @@ from weather_agent import weather_agent_bp
 from conversation_manager import conversation_manager
 from extensions import limiter
 from conversation_db import init_db as _init_conversation_db
+from request_metrics import (
+    get_metrics_summary,
+    init_metrics_db,
+    prune_old_metrics,
+    record_request_metric,
+)
 
 app = Flask(__name__)
 limiter.init_app(app)
 _init_conversation_db()
+try:
+    init_metrics_db()
+    prune_old_metrics()
+except Exception as exc:
+    print(f"Request metrics initialization failed: {exc}")
 
 # ========================================
 # CORS Configuration
 # ========================================
-ENV = os.getenv("ENV", "prod").strip().lower()
-
 if ENV in ("dev", "development"):
     CORS(app,
          resources={r"/*": {
@@ -90,10 +112,60 @@ else:
 # ========================================
 _SILENT_PATHS = {"/health", "/health/deep"}
 
+
+def _get_request_json():
+    if not request.is_json:
+        return {}
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _extract_request_metadata(data):
+    location = None
+    location_data = data.get("location") if isinstance(data.get("location"), dict) else {}
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+
+    if data.get("city"):
+        location = data.get("city")
+    elif location_data.get("city"):
+        location = location_data.get("city")
+    elif metadata.get("location"):
+        location = metadata.get("location")
+
+    return {
+        "session_id": data.get("session_id"),
+        "location": location,
+    }
+
+
+def _tag_sentry_request(metadata):
+    sentry_sdk.set_tag("request_id", g.get("request_id", ""))
+    sentry_sdk.set_tag("method", request.method)
+    sentry_sdk.set_tag("path", request.path)
+
+    if metadata.get("session_id"):
+        sentry_sdk.set_tag("session_id", metadata["session_id"])
+    if metadata.get("location"):
+        sentry_sdk.set_tag("location", metadata["location"])
+
+    sentry_sdk.set_context("request_metadata", {
+        "request_id": g.get("request_id", ""),
+        "method": request.method,
+        "path": request.path,
+        "session_id": metadata.get("session_id"),
+        "location": metadata.get("location"),
+    })
+
 @app.before_request
 def log_request():
     g.start_time = time.time()
     g.request_id = str(uuid.uuid4())
+    g.request_json = _get_request_json()
+    request_metadata = _extract_request_metadata(g.request_json)
+    g.session_id = request_metadata.get("session_id")
+    g.location = request_metadata.get("location")
+    _tag_sentry_request(request_metadata)
+
     if request.path in _SILENT_PATHS:
         return
     rid = f"[REQ-{g.request_id[:8]}]"
@@ -103,12 +175,8 @@ def log_request():
     print(f"{rid} Method: {request.method}")
     print(f"{rid} Path: {request.path}")
     print(f"{rid} Origin: {request.headers.get('Origin', 'No origin')}")
-    if request.is_json:
-        try:
-            body = request.get_json()
-            print(f"{rid} Body: {json.dumps(body, indent=2)}")
-        except Exception:
-            pass
+    if ENV == "dev" and g.request_json:
+        print(f"{rid} Body: {json.dumps(g.request_json, indent=2)}")
 
 @app.after_request
 def log_response(response):
@@ -127,15 +195,38 @@ def log_response(response):
         except Exception:
             pass
 
+    duration_ms = round((time.time() - g.get("start_time", time.time())) * 1000, 2)
+    session_id = g.get("session_id")
+    location = g.get("location")
+
+    if not request.path.startswith("/static"):
+        try:
+            record_request_metric(
+                request.method,
+                request.path,
+                response.status_code,
+                duration_ms,
+                session_id=session_id,
+                location=location,
+                request_id=req_id,
+            )
+        except Exception as exc:
+            if ENV == "dev":
+                print(f"Request metrics recording failed: {exc}")
+
     if request.path in _SILENT_PATHS:
         return response
 
-    rid = f"[REQ-{req_id[:8]}]" if req_id else ""
-    duration = time.time() - g.get("start_time", time.time())
-    print(f"\n{'='*60}")
-    print(f"📤 {rid} RESPONSE [{datetime.now().strftime('%H:%M:%S')}] - {duration:.3f}s")
-    print(f"{rid} Status: {response.status}")
-    print(f"{'='*60}\n")
+    record = {
+        "method": request.method,
+        "path": request.path,
+        "status": response.status_code,
+        "duration_ms": duration_ms,
+        "session_id": session_id,
+        "request_id": req_id,
+    }
+    prefix = "⚠️ SLOW " if duration_ms > 3000 else "REQUEST "
+    print(f"{prefix}{json.dumps(record, ensure_ascii=False)}")
     return response
 
 # ========================================
@@ -147,6 +238,8 @@ def handle_error(error):
     error_id = f"ERR-{int(time.time())}"
     req_id = g.get("request_id", "unknown")
     rid = f"[REQ-{req_id[:8]}]"
+    if SENTRY_DSN:
+        sentry_sdk.capture_exception(error)
     print(f"\n{'🚨'*30}")
     print(f"🚨 {rid} ERROR [{error_id}]")
     print(error_trace)
@@ -264,6 +357,29 @@ def health_check_deep():
         "environment": ENV,
         "services": services,
     })
+
+
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    cache_hit_rate = None
+    warning = None
+
+    try:
+        from dopplertower_engine import cache_stats
+        cache_hit_rate = cache_stats().get("hit_rate_pct")
+    except Exception as exc:
+        warning = f"cache_stats unavailable: {type(exc).__name__}"
+
+    summary = get_metrics_summary(days=7)
+    payload = {
+        **summary,
+        "cache_hit_rate": cache_hit_rate,
+        "timestamp": datetime.now().isoformat(),
+    }
+    if warning:
+        payload["warning"] = warning
+
+    return jsonify(payload)
 
 
 # ========================================

@@ -3,6 +3,7 @@ flask-cors
 flask
 flask-limiter
 gunicorn
+sentry-sdk[flask]
 aiofiles==24.1.0
 aiohappyeyeballs==2.4.4
 aiohttp==3.11.11
