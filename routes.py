@@ -51,7 +51,7 @@ def home():
         "version": "2.0",
         "features": [
             "Weather forecasts",
-            "Tone selection (8 personalities)",
+            "Tone selection (10 personalities)",
             "Conversation history",
             "City resolution",
             "Auto-loading"
@@ -434,14 +434,8 @@ def get_history(session_id: str):
 @cross_origin()
 @limiter.shared_limit("20 per minute", scope="prompt")
 def handle_prompt_stream():
-    """POST /prompt/stream — SSE streaming version of /prompt.
-
-    Streams the GPT summary token-by-token as Server-Sent Events.
-    Each token: ``data: {escaped_token}\\n\\n``
-    End-of-stream marker: ``data: [DONE]\\n\\n``
-    """
-    import json as _json
-    from dopplertower_engine import generate_summary_stream, TONE_PRESETS
+    """POST /prompt/stream - SSE version of /prompt with structured weather parity."""
+    from dopplertower_engine import TONE_PRESETS
 
     data = request.get_json() or {}
     user_prompt = (data.get("prompt") or "").strip()
@@ -452,44 +446,53 @@ def handle_prompt_stream():
     if tone not in TONE_PRESETS:
         tone = "sarcastic"
 
-    lat = location.get("lat")
-    lon = location.get("lon")
-
     if not user_prompt:
         return error_response("Missing prompt", ErrorCode.INVALID_REQUEST, 400)
-    if lat is None or lon is None:
-        return error_response("Missing location coordinates", ErrorCode.INVALID_REQUEST, 400)
 
     conv_history = get_history_for_openai(session_id, exchanges=6) if session_id else None
     req_id = g.get("request_id", "")
 
     print(f"🌊 /prompt/stream | session={session_id} | tone={tone}")
 
+    def text_chunks(text: str, size: int = 60):
+        for index in range(0, len(text), size):
+            yield text[index:index + size]
+
     def generate():
-        # First event carries the request ID so the client can log it
-        yield f"event: meta\ndata: {_json.dumps({'request_id': req_id})}\n\n"
-        accumulated: list[str] = []
+        yield f"event: meta\ndata: {json.dumps({'request_id': req_id, 'session_id': session_id}, ensure_ascii=False)}\n\n"
         try:
-            for token in generate_summary_stream(
-                lat, lon,
-                user_prompt=user_prompt,
+            result = process_prompt_from_app_structured(
+                user_prompt,
+                location=location,
                 tone=tone,
-                conversation_history=conv_history,
-            ):
-                accumulated.append(token)
-                # Escape newlines — SSE data lines must not contain raw \n
-                safe = token.replace("\n", "\\n")
-                yield f"data: {safe}\n\n"
+                conversation_history=conv_history
+            )
+            if result.get("error"):
+                raise ValueError(result.get("error"))
+
+            weather_payload = dict(result)
+            weather_payload.pop("raw", None)
+            weather_payload["session_id"] = session_id
+            weather_payload["tone"] = tone
+            yield f"event: weather\ndata: {json.dumps(weather_payload, ensure_ascii=False)}\n\n"
+
+            text = result.get("text_summary") or result.get("summary") or ""
+            for chunk in text_chunks(text):
+                safe_chunk = chunk.replace("\n", "\\n")
+                yield f"data: {safe_chunk}\n\n"
+
+            if session_id and text:
+                store_exchange(session_id, user_prompt, text)
+
+            yield "data: [DONE]\n\n"
         except Exception as ex:
-            yield f"event: error\ndata: {_json.dumps({'error': str(ex)})}\n\n"
-            return
-
-        # Persist exchange after stream completes
-        if session_id and accumulated:
-            full_text = "".join(accumulated)
-            store_exchange(session_id, user_prompt, full_text)
-
-        yield "data: [DONE]\n\n"
+            if session_id:
+                session_logger.log_error(session_id, f"Stream prompt processing error: {str(ex)}")
+            payload = {"error": str(ex), "request_id": req_id}
+            if ENV == "dev":
+                payload["trace"] = traceback.format_exc()
+            yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return
 
     return Response(
         stream_with_context(generate()),
