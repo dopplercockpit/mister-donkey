@@ -9,9 +9,26 @@ from geo_utils_helper import reverse_geolocate
 from push_helper import send_push_firebase as send_push_notification, send_email_alert
 import json
 import os
+import hmac
+from functools import wraps
 from flask import Blueprint, request, jsonify
 import sqlite3
 from typing import Dict, List, Optional, Any
+
+ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()
+
+def require_admin(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not ADMIN_SECRET:
+            return jsonify({"error": "Admin controls disabled: ADMIN_SECRET is not configured"}), 503
+
+        token = request.headers.get("X-Admin-Token", "").strip()
+        if not token or not hmac.compare_digest(token, ADMIN_SECRET):
+            return jsonify({"error": "Unauthorized"}), 401
+
+        return f(*args, **kwargs)
+    return decorated
 
 # Create Flask blueprint for weather-agent endpoints
 weather_agent_bp = Blueprint("weather_agent", __name__)
@@ -604,6 +621,7 @@ def get_history_endpoint(user_id: str):
     return jsonify({"user_id": user_id, "alerts": history})
 
 @weather_agent_bp.route("/service/start", methods=["POST"])
+@require_admin
 def start_service_endpoint():
     """
     POST /service/start
@@ -622,6 +640,7 @@ def start_service_endpoint():
         })
 
 @weather_agent_bp.route("/service/stop", methods=["POST"])
+@require_admin
 def stop_service_endpoint():
     """
     POST /service/stop
@@ -634,6 +653,7 @@ def stop_service_endpoint():
         return jsonify({"status": "not_running"})
 
 @weather_agent_bp.route("/service/status", methods=["GET"])
+@require_admin
 def service_status_endpoint():
     """
     GET /service/status
