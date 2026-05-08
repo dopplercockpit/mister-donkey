@@ -36,8 +36,8 @@ def get_geolocation(city_name):
     """
     Given a city name, return (lat, lon, full name)
     """
-    url = f"https://api.opencagedata.com/geocode/v1/json?q={city_name}&key={GEOLOCATION_API_KEY}"
-    resp = requests.get(url)
+    url = "https://api.opencagedata.com/geocode/v1/json"
+    resp = requests.get(url, params={"q": city_name, "key": GEOLOCATION_API_KEY}, timeout=5)
     if resp.status_code != 200:
         print(f"Geolocation Error: {resp.status_code}: {resp.text}")
         return None, None, None
@@ -51,6 +51,56 @@ def get_geolocation(city_name):
         return lat, lon, full_name
 
     return None, None, None
+
+def resolve_location_query(query: str) -> dict | None:
+    """Resolve a manual city/postal query to normalized coordinates."""
+    clean_query = (query or "").strip()
+    if len(clean_query) < 2:
+        return None
+
+    try:
+        lat, lon, full_name = get_geolocation(clean_query)
+        if is_valid_coordinates(lat, lon):
+            return {
+                "name": full_name or clean_query,
+                "lat": float(lat),
+                "lon": float(lon),
+                "source": "opencage",
+            }
+    except Exception as e:
+        print(f"⚠️ OpenCage manual resolve failed: {e}")
+
+    try:
+        resp = requests.get(
+            f"{WEATHERAPI_URL}/search.json",
+            params={"key": WEATHERAPI_KEY, "q": clean_query},
+            timeout=5,
+        )
+        if resp.status_code != 200:
+            print(f"WeatherAPI resolve error: {resp.status_code}: {resp.text}")
+            return None
+
+        matches = resp.json()
+        if isinstance(matches, list) and matches:
+            match = matches[0]
+            lat = match.get("lat")
+            lon = match.get("lon")
+            if is_valid_coordinates(lat, lon):
+                name = ", ".join(filter(None, [
+                    match.get("name"),
+                    match.get("region"),
+                    match.get("country"),
+                ]))
+                return {
+                    "name": name or clean_query,
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "source": "weatherapi",
+                }
+    except Exception as e:
+        print(f"⚠️ WeatherAPI manual resolve failed: {e}")
+
+    return None
 
 def reverse_geolocate(lat, lon):
     """

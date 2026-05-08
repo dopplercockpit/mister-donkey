@@ -16,8 +16,8 @@ from conversation_db import get_history_for_openai, get_history_raw, store_excha
 # Configuration
 from config import ENV
 
-# Helper for reverse geocoding
-from geo_utils_helper import reverse_geolocate
+# Helper for geocoding
+from geo_utils_helper import resolve_location_query, reverse_geolocate
 
 # Main logic to process the weather prompt
 from process_app_prompt import process_prompt_from_app_structured
@@ -59,6 +59,7 @@ def home():
         "endpoints": {
             "/prompt": "Main weather query endpoint",
             "/geo/reverse": "Reverse geocoding",
+            "/geo/resolve": "Manual location resolution",
             "/agents": "Scheduled weather agents",
             "/conversation/new": "Create new conversation",
             "/conversation/<id>": "Get conversation history",
@@ -86,6 +87,31 @@ def reverse_lookup():
         return error_response("Could not determine city from coordinates.", ErrorCode.LOCATION_NOT_FOUND, 500)
 
     return jsonify({"city": city_name})
+
+@bp.route("/geo/resolve", methods=["POST"])
+@cross_origin()
+def resolve_manual_location():
+    """POST /geo/resolve - Convert manual city/postal input to lat/lon."""
+    data = request.get_json() or {}
+    query = (data.get("query") or "").strip()
+
+    if len(query) < 2:
+        return error_response("Enter at least 2 characters for location search.", ErrorCode.INVALID_REQUEST, 400)
+
+    try:
+        result = resolve_location_query(query)
+    except Exception as ex:
+        return error_response(f"Location resolution failed: {str(ex)}", ErrorCode.API_ERROR, 500)
+
+    if not result:
+        return error_response("Could not resolve location", ErrorCode.LOCATION_NOT_FOUND, 404)
+
+    return jsonify({
+        "name": result["name"],
+        "lat": result["lat"],
+        "lon": result["lon"],
+        "source": "manual",
+    })
 
 @bp.route("/agents", methods=["GET"])
 def get_all_agents():
