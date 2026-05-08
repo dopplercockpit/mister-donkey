@@ -28,6 +28,7 @@ class WeatherSnapshot:
     visibility_m: Optional[int] = None
     cloud_pct: Optional[int] = None
     pressure: Optional[int] = None
+    is_day: Optional[bool] = None
 
     source: str = ""
 
@@ -141,6 +142,11 @@ def normalize_openweather_current(data) -> WeatherSnapshot:
     wind_ms = safe_round(wind.get("speed"), 1)
     visibility_m = _as_int(data.get("visibility"))
     condition_main = weather.get("main") or ""
+    dt = _as_int(data.get("dt"))
+    sys_data = data.get("sys") or {}
+    sunrise = _as_int(sys_data.get("sunrise"))
+    sunset = _as_int(sys_data.get("sunset"))
+    is_day = sunrise is not None and sunset is not None and dt is not None and sunrise <= dt <= sunset
 
     return WeatherSnapshot(
         temp_c=temp_c,
@@ -162,6 +168,7 @@ def normalize_openweather_current(data) -> WeatherSnapshot:
         visibility_m=visibility_m,
         cloud_pct=_as_int(clouds.get("all")),
         pressure=_as_int(main.get("pressure")),
+        is_day=is_day if sunrise is not None and sunset is not None and dt is not None else None,
         source="openweather",
     )
 
@@ -189,6 +196,7 @@ def normalize_weatherapi_current(data) -> WeatherSnapshot:
         visibility_km=safe_round(current.get("vis_km"), 1),
         cloud_pct=_as_int(current.get("cloud")),
         pressure=_as_int(current.get("pressure_mb")),
+        is_day=bool(current.get("is_day")) if current.get("is_day") is not None else None,
         source="weatherapi",
     )
 

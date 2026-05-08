@@ -136,7 +136,9 @@ def get_tones():
         "drill_sergeant": "🎖️",
         "gen_z": "💅",
         "noir_detective": "🕵️",
-        "shakespeare": "🎭"
+        "shakespeare": "🎭",
+        "mobster": "🤌",
+        "doomsday": "☢️"
     }
 
     tones = []
