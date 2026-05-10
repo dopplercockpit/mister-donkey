@@ -48,8 +48,30 @@ def _normalize_temp_unit(value):
 
 def _temperature_unit_instruction(temp_unit):
     if temp_unit == "F":
-        return "Use Fahrenheit for temperatures in the user-facing response. You may include Celsius only if helpful."
-    return "Use Celsius for temperatures in the user-facing response. You may include Fahrenheit only if helpful."
+        return (
+            "Measurement formatting rule: In user-facing prose, include both US/imperial and metric units "
+            "for weather measurements when those measurements are mentioned, with US/imperial first. "
+            "For temperatures, use Fahrenheit first and Celsius second, rounded to whole numbers with no decimals, "
+            "e.g. 64°F / 18°C. For feels-like temperatures, follow the same format, e.g. feels like 59°F / 15°C. "
+            "For wind speed, use mph first and km/h second, rounded to whole numbers, e.g. 12 mph / 19 km/h. "
+            "For precipitation amount, use inches first and millimeters second; keep small inch values readable "
+            "with up to two decimals when needed, e.g. 0.08 in / 2 mm. For visibility, use miles first and "
+            "kilometers second, rounded sensibly, e.g. 6 mi / 10 km. For pressure, use inHg first and hPa second, "
+            "e.g. 29.92 inHg / 1013 hPa. Humidity and precipitation chance remain percentages only. "
+            "UV index remains unitless."
+        )
+    return (
+        "Measurement formatting rule: In user-facing prose, include both metric and US/imperial units "
+        "for weather measurements when those measurements are mentioned, with metric first. "
+        "For temperatures, use Celsius first and Fahrenheit second, rounded to whole numbers with no decimals, "
+        "e.g. 18°C / 64°F. For feels-like temperatures, follow the same format, e.g. feels like 15°C / 59°F. "
+        "For wind speed, use km/h first and mph second, rounded to whole numbers, e.g. 19 km/h / 12 mph. "
+        "For precipitation amount, use millimeters first and inches second; keep small inch values readable "
+        "with up to two decimals when needed, e.g. 2 mm / 0.08 in. For visibility, use kilometers first and "
+        "miles second, rounded sensibly, e.g. 10 km / 6 mi. For pressure, use hPa first and inHg second, "
+        "e.g. 1013 hPa / 29.92 inHg. Humidity and precipitation chance remain percentages only. "
+        "UV index remains unitless."
+    )
 
 def _append_temperature_unit_instruction(prompt, temp_unit):
     return f"{prompt}\n\nUser temperature unit preference: {_temperature_unit_instruction(temp_unit)}"

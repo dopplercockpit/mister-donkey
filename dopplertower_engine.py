@@ -100,6 +100,13 @@ Each persona may use a few flavor emojis, but clarity comes first.
 def _tone_prompt(description: str) -> str:
     return f"{description}\n\n{ADULT_HUMOR_CONTRACT}\n{EMOJI_STYLE_CONTRACT}{NEWS_CONTEXT_INSTRUCTION}"
 
+MEASUREMENT_FORMATTING_REINFORCEMENT = (
+    "Respect any measurement formatting rule included in the user prompt. When both metric and US/imperial "
+    "units are requested, include both with the preferred system first. Round temperatures to whole numbers "
+    "with no decimals. Round wind speeds to whole numbers. Keep small precipitation amounts readable and "
+    "do not round tiny inch values to zero."
+)
+
 TONE_PRESETS = {
     "sarcastic": {
         "name": "Mister Donkey",
@@ -446,7 +453,7 @@ User prompt context:
     
     # Build messages with conversation history if provided
     messages = [
-        {"role": "system", "content": tone_config["system_prompt"]}
+        {"role": "system", "content": f"{tone_config['system_prompt']}\n\n{MEASUREMENT_FORMATTING_REINFORCEMENT}"}
     ]
     
     # Add conversation history if it exists
@@ -591,7 +598,7 @@ User prompt context:
 """
 
     tone_config = TONE_PRESETS.get(tone, TONE_PRESETS["sarcastic"])
-    messages = [{"role": "system", "content": tone_config["system_prompt"]}]
+    messages = [{"role": "system", "content": f"{tone_config['system_prompt']}\n\n{MEASUREMENT_FORMATTING_REINFORCEMENT}"}]
     if conversation_history:
         messages.extend(conversation_history)
     messages.append({"role": "user", "content": summary_input})
