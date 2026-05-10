@@ -43,6 +43,25 @@ from session_logger import session_logger
 # Create a Blueprint
 bp = Blueprint("routes", __name__)
 
+def _normalize_temp_unit(value):
+    return value if value in ("C", "F") else "C"
+
+def _temperature_unit_instruction(temp_unit):
+    if temp_unit == "F":
+        return "Use Fahrenheit for temperatures in the user-facing response. You may include Celsius only if helpful."
+    return "Use Celsius for temperatures in the user-facing response. You may include Fahrenheit only if helpful."
+
+def _append_temperature_unit_instruction(prompt, temp_unit):
+    return f"{prompt}\n\nUser temperature unit preference: {_temperature_unit_instruction(temp_unit)}"
+
+def _attach_temp_unit_metadata(result, temp_unit):
+    result["temp_unit"] = temp_unit
+    metadata = result.get("metadata")
+    if isinstance(metadata, dict):
+        metadata["temp_unit"] = temp_unit
+    else:
+        result["metadata"] = {"temp_unit": temp_unit}
+
 @bp.route("/", methods=["GET"])
 def home():
     """GET / - Simple sanity-check endpoint."""
@@ -246,6 +265,7 @@ def handle_prompt():
     location = data.get("location") or {}
     is_auto_request = data.get("auto", False)
     debug_requested = bool(data.get("debug", False))
+    temp_unit = _normalize_temp_unit(data.get("temp_unit", "C"))
     
     # NEW: Tone and conversation parameters
     tone = data.get("tone", "sarcastic")
@@ -327,6 +347,8 @@ def handle_prompt():
             error_msg = "Auto-loading failed: Could not determine location or generate prompt."
         return error_response(error_msg, ErrorCode.INVALID_REQUEST, 400)
 
+    modified_prompt = _append_temperature_unit_instruction(modified_prompt, temp_unit)
+
     # Load conversation history from SQLite (last 6 exchanges = 12 messages)
     conversation_history = None
     if session_id:
@@ -346,6 +368,8 @@ def handle_prompt():
         if session_id:
             store_exchange(session_id, user_prompt, result.get("text_summary", ""))
             result["session_id"] = session_id
+
+        _attach_temp_unit_metadata(result, temp_unit)
         
         # Ensure debug flag is set if either condition is true
         if debug_requested or is_auto_request:
@@ -357,6 +381,7 @@ def handle_prompt():
                 "modified_prompt": modified_prompt,
                 "resolver_metadata": resolver_metadata,
                 "tone_used": tone,
+                "temp_unit": temp_unit,
                 "has_conversation_history": conversation_history is not None
             }
         
@@ -468,6 +493,7 @@ def handle_prompt_stream():
     location    = data.get("location") or {}
     tone        = data.get("tone", "sarcastic")
     session_id  = data.get("session_id")
+    temp_unit   = _normalize_temp_unit(data.get("temp_unit", "C"))
 
     if tone not in TONE_PRESETS:
         tone = "sarcastic"
@@ -477,6 +503,7 @@ def handle_prompt_stream():
 
     conv_history = get_history_for_openai(session_id, exchanges=6) if session_id else None
     req_id = g.get("request_id", "")
+    prompt_for_processing = _append_temperature_unit_instruction(user_prompt, temp_unit)
 
     print(f"🌊 /prompt/stream | session={session_id} | tone={tone}")
 
@@ -485,10 +512,10 @@ def handle_prompt_stream():
             yield text[index:index + size]
 
     def generate():
-        yield f"event: meta\ndata: {json.dumps({'request_id': req_id, 'session_id': session_id}, ensure_ascii=False)}\n\n"
+        yield f"event: meta\ndata: {json.dumps({'request_id': req_id, 'session_id': session_id, 'temp_unit': temp_unit}, ensure_ascii=False)}\n\n"
         try:
             result = process_prompt_from_app_structured(
-                user_prompt,
+                prompt_for_processing,
                 location=location,
                 tone=tone,
                 conversation_history=conv_history
@@ -500,6 +527,7 @@ def handle_prompt_stream():
             weather_payload.pop("raw", None)
             weather_payload["session_id"] = session_id
             weather_payload["tone"] = tone
+            _attach_temp_unit_metadata(weather_payload, temp_unit)
             yield f"event: weather\ndata: {json.dumps(weather_payload, ensure_ascii=False)}\n\n"
 
             text = result.get("text_summary") or result.get("summary") or ""
