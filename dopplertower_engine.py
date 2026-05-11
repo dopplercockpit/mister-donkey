@@ -13,7 +13,7 @@ from PIL import Image
 import time
 from news_fetcher import get_location_news, format_news_for_prompt, extract_country_code
 from logger_config import setup_logger, log_llm_call
-from weather_normalizer import normalize_openweather_current
+from weather_normalizer import normalize_openweather_current, normalize_weatherapi_current
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -401,6 +401,9 @@ def get_full_weather_summary_by_coords(
     aqi = get_air_quality(lat, lon)
     alerts = get_weather_alerts(lat, lon)
     forecast_text = get_three_day_forecast(lat, lon)
+    weatherapi_current = {}
+    if isinstance(forecast_text, dict):
+        weatherapi_current = forecast_text.get("current") or {}
     hist_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
     history = get_historical_weather(lat, lon, hist_date)
 
@@ -485,6 +488,7 @@ User prompt context:
         "location": display_name,
         "coords": {"lat": lat, "lon": lon},
         "current": current,
+        "weatherapi_current": weatherapi_current,
         "forecast": forecast,
         "air_quality": aqi,
         "alerts": alerts,
@@ -640,10 +644,18 @@ def format_structured_weather_response(raw_response: dict) -> dict:
     Returns:
         Structured response with separate sections for text, weather, news, metadata
     """
-    current = raw_response.get("current", {})
+    openweather_current = raw_response.get("current", {})
+    weatherapi_current = raw_response.get("weatherapi_current") or {}
     forecast = raw_response.get("forecast", {})
     alerts = raw_response.get("alerts", [])
     news_articles = raw_response.get("news", [])
+
+    if isinstance(weatherapi_current, dict) and weatherapi_current:
+        normalized_current = normalize_weatherapi_current(weatherapi_current).to_dict()
+        normalized_current["source"] = "weatherapi"
+    else:
+        normalized_current = normalize_openweather_current(openweather_current).to_dict()
+        normalized_current["source"] = "openweather"
 
     # Extract 3-day simplified forecast
     forecast_list = forecast.get("list", [])
@@ -652,12 +664,34 @@ def format_structured_weather_response(raw_response: dict) -> dict:
     # Format alerts
     formatted_alerts = format_alerts_structured(alerts)
 
+    hourly = raw_response.get("hourly", [])
+    first_hour = hourly[0] if hourly else {}
+    try:
+        first_hour_code = int(first_hour.get("condition_code"))
+    except (TypeError, ValueError):
+        first_hour_code = None
+    try:
+        first_hour_precip = int(first_hour.get("precip_chance") or 0)
+    except (TypeError, ValueError):
+        first_hour_precip = 0
+    first_hour_rain_or_thunder = (
+        first_hour_code in (1063, 1072, 1087) or
+        (1150 <= first_hour_code <= 1201 if first_hour_code is not None else False) or
+        (1240 <= first_hour_code <= 1246 if first_hour_code is not None else False) or
+        (1273 <= first_hour_code <= 1282 if first_hour_code is not None else False)
+    )
+    current_hourly_conflict = (
+        normalized_current.get("source") == "openweather" and
+        "clear" in (normalized_current.get("conditions") or "").lower() and
+        (first_hour_precip >= 70 or first_hour_rain_or_thunder)
+    )
+
     return {
         "text_summary": raw_response.get("summary", ""),
         "summary": raw_response.get("summary", ""),       # legacy alias
         "weather": {
-            "hourly": raw_response.get("hourly", []),
-            "current": normalize_openweather_current(current).to_dict(),
+            "hourly": hourly,
+            "current": normalized_current,
             "forecast_3day": forecast_3day,
             "alerts": formatted_alerts,
             "air_quality": raw_response.get("air_quality", "Unknown")
@@ -673,11 +707,14 @@ def format_structured_weather_response(raw_response: dict) -> dict:
             "tone": raw_response.get("tone", "sarcastic"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "has_alerts": len(formatted_alerts) > 0,
-            "has_news": len(news_articles) > 0
+            "has_news": len(news_articles) > 0,
+            "current_source": normalized_current.get("source"),
+            **({"current_hourly_conflict": True} if current_hourly_conflict else {})
         },
         # Keep raw data for debugging/advanced use
         "raw": {
-            "current": current,
+            "current": openweather_current,
+            "weatherapi_current": weatherapi_current,
             "forecast": forecast,
             "alerts": alerts,
             "history": raw_response.get("history")
