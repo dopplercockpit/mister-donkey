@@ -565,6 +565,7 @@ weather_agent = WeatherAgent()
 # ================================
 
 @weather_agent_bp.route("/start-agent", methods=["POST"])
+@require_admin
 def start_agent_endpoint():
     """
     POST /start-agent
@@ -586,6 +587,7 @@ def start_agent_endpoint():
     return jsonify(result)
 
 @weather_agent_bp.route("/stop-agent", methods=["POST"])
+@require_admin
 def stop_agent_endpoint():
     """
     POST /stop-agent
