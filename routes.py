@@ -16,6 +16,15 @@ from conversation_db import get_history_for_openai, get_history_raw, store_excha
 # Configuration
 from config import ENV
 
+DEFAULT_PROMPT_RATE_LIMIT = "100/day;20/hour;5/minute"
+
+PROMPT_RATE_LIMIT = (
+    os.getenv("PROMPT_RATE_LIMIT", DEFAULT_PROMPT_RATE_LIMIT).strip()
+    or DEFAULT_PROMPT_RATE_LIMIT
+)
+
+prompt_rate_limit = limiter.shared_limit(PROMPT_RATE_LIMIT, scope="prompt")
+
 # Helper for geocoding
 from geo_utils_helper import resolve_location_query, reverse_geolocate
 
@@ -272,7 +281,7 @@ def clear_conversation(session_id: str):
 
 @bp.route("/prompt", methods=["POST"])
 @cross_origin()
-@limiter.shared_limit("20 per minute", scope="prompt")
+@prompt_rate_limit
 def handle_prompt():
     """
     POST /prompt - Main weather prompt endpoint.
@@ -442,7 +451,7 @@ def handle_prompt():
 
 @bp.route("/prompt/structured", methods=["POST"])
 @cross_origin()
-@limiter.shared_limit("20 per minute", scope="prompt")
+@prompt_rate_limit
 def handle_prompt_structured():
     """POST /prompt/structured - 308 permanent redirect to /prompt (identical response)."""
     return redirect(url_for("routes.handle_prompt"), 308)
@@ -505,7 +514,7 @@ def get_history(session_id: str):
 
 @bp.route("/prompt/stream", methods=["POST"])
 @cross_origin()
-@limiter.shared_limit("20 per minute", scope="prompt")
+@prompt_rate_limit
 def handle_prompt_stream():
     """POST /prompt/stream - SSE version of /prompt with structured weather parity."""
     from dopplertower_engine import TONE_PRESETS

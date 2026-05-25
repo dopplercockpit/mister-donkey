@@ -17,6 +17,22 @@ from typing import Dict, List, Optional, Any
 
 ADMIN_SECRET = os.getenv("ADMIN_SECRET", "").strip()
 
+def get_agent_check_interval_seconds() -> int:
+    """
+    Return proactive weather-agent polling interval in seconds.
+
+    Default is hourly because frequent weather polling burns API quota fast.
+    Minimum is clamped to 900 seconds so production cannot accidentally poll too aggressively.
+    """
+    raw_value = os.getenv("WEATHER_AGENT_CHECK_INTERVAL_SECONDS", "3600").strip()
+
+    try:
+        interval = int(raw_value)
+    except ValueError:
+        interval = 3600
+
+    return max(interval, 900)
+
 def require_admin(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -47,7 +63,9 @@ class WeatherAgent:
         }
 
         self.running = False
-        self.check_interval = 300  # check every 5 minutes
+        # self.check_interval = 300  # REMOVED/STABILIZED: 5-minute polling is too aggressive for production agent use.
+        self.check_interval = get_agent_check_interval_seconds()
+        print(f"🤖 Weather Agent check interval set to {self.check_interval} seconds")
 
         # Where we store sessions + history
         self.db_path = "weather_agent.db"
