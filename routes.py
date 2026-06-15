@@ -464,9 +464,9 @@ def handle_prompt():
 
 @bp.route("/prompt/structured", methods=["POST"])
 @cross_origin()
-@prompt_rate_limit
+# @prompt_rate_limit  # REMOVED/STABILIZED: redirect endpoint should not consume shared prompt quota before /prompt applies it.
 def handle_prompt_structured():
-    """POST /prompt/structured - 308 permanent redirect to /prompt (identical response)."""
+    """POST /prompt/structured - 308 redirect to /prompt; /prompt enforces the shared prompt rate limit."""
     return redirect(url_for("routes.handle_prompt"), 308)
 
 
