@@ -14,3 +14,11 @@ python -m venv .venv
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+
+Cost protection environment:
+
+- `LLM_CACHE_TTL_SECONDS`: SQLite LLM response cache TTL in seconds. Default `10800`.
+- `LLM_DAILY_LIMIT_PER_IP`: fresh LLM call limit per hashed IP per UTC day. Default `20`.
+- `LLM_BURST_LIMIT_PER_MINUTE`: fresh LLM call limit per hashed IP per UTC minute. Default `5`.
+- `RATE_LIMIT_SALT`: salt used before hashing client IPs. Required outside dev/local/test.
+- `DISABLE_LLM`: set to `true` to skip fresh LLM calls and return deterministic fallback roasts.

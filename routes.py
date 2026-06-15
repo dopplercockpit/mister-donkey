@@ -12,6 +12,7 @@ from flask_cors import cross_origin
 from extensions import limiter
 from utils import ErrorCode, error_response
 from conversation_db import get_history_for_openai, get_history_raw, store_exchange
+from request_metrics import record_event_metric
 
 # Configuration
 from config import ENV
@@ -51,6 +52,12 @@ from session_logger import session_logger
 
 # Create a Blueprint
 bp = Blueprint("routes", __name__)
+
+
+def _location_label_from_request_data(data):
+    location = data.get("location") if isinstance(data.get("location"), dict) else {}
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    return data.get("city") or location.get("city") or location.get("name") or metadata.get("location")
 
 def _normalize_temp_unit(value):
     return value if value in ("C", "F") else "C"
@@ -301,6 +308,12 @@ def handle_prompt():
     # NEW: Tone and conversation parameters
     tone = data.get("tone", "sarcastic")
     session_id = data.get("session_id")
+    record_event_metric(
+        "weather_request_received",
+        location=_location_label_from_request_data(data),
+        tone=tone,
+        session_id=session_id,
+    )
 
     # Validate tone
     from dopplertower_engine import TONE_PRESETS
@@ -512,6 +525,40 @@ def get_history(session_id: str):
     return jsonify({"session_id": session_id, "messages": messages, "count": len(messages)})
 
 
+@bp.route("/metrics/share", methods=["POST"])
+@cross_origin()
+def metrics_share():
+    """POST /metrics/share - Minimal share conversion event."""
+    data = request.get_json(silent=True) if request.is_json else {}
+    data = data if isinstance(data, dict) else {}
+    record_event_metric(
+        "share_event_received",
+        endpoint="/metrics/share",
+        session_id=data.get("session_id"),
+        client_id=data.get("client_id") or data.get("user_id"),
+        location=_location_label_from_request_data(data),
+        tone=data.get("tone"),
+    )
+    return jsonify({"ok": True})
+
+
+@bp.route("/metrics/kofi-click", methods=["POST"])
+@cross_origin()
+def metrics_kofi_click():
+    """POST /metrics/kofi-click - Minimal Ko-fi click conversion event."""
+    data = request.get_json(silent=True) if request.is_json else {}
+    data = data if isinstance(data, dict) else {}
+    record_event_metric(
+        "kofi_click_received",
+        endpoint="/metrics/kofi-click",
+        session_id=data.get("session_id"),
+        client_id=data.get("client_id") or data.get("user_id"),
+        location=_location_label_from_request_data(data),
+        tone=data.get("tone"),
+    )
+    return jsonify({"ok": True})
+
+
 @bp.route("/prompt/stream", methods=["POST"])
 @cross_origin()
 @prompt_rate_limit
@@ -525,6 +572,12 @@ def handle_prompt_stream():
     tone        = data.get("tone", "sarcastic")
     session_id  = data.get("session_id")
     temp_unit   = _normalize_temp_unit(data.get("temp_unit", "C"))
+    record_event_metric(
+        "weather_request_received",
+        location=_location_label_from_request_data(data),
+        tone=tone,
+        session_id=session_id,
+    )
 
     if tone not in TONE_PRESETS:
         tone = "sarcastic"

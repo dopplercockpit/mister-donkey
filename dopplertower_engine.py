@@ -13,7 +13,18 @@ from PIL import Image
 import time
 from news_fetcher import get_location_news, format_news_for_prompt, extract_country_code
 from logger_config import setup_logger, log_llm_call
+from request_metrics import record_event_metric
 from weather_normalizer import normalize_openweather_current, normalize_weatherapi_current
+from llm_cache import (
+    LLM_CACHE_TTL_SECONDS,
+    PROMPT_VERSION,
+    build_cache_key,
+    get_cached_response_with_status,
+    save_cached_response,
+    weather_identity,
+)
+from llm_quota import check_llm_quota, quota_context_from_request, record_llm_usage
+from fallback_roasts import build_fallback_roast
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
@@ -371,6 +382,42 @@ def parse_weather_alerts(alerts):
 
     return "\n".join(summaries)
 
+
+# Legacy inline fallback retained for compatibility; active fallback templates live in fallback_roasts.py.
+def build_deterministic_weather_roast(display_name, current, forecast, aqi, alerts, tone="sarcastic"):
+    current_main = current.get("main", {}) if isinstance(current, dict) else {}
+    weather_items = current.get("weather", []) if isinstance(current, dict) else []
+    weather = weather_items[0] if weather_items else {}
+    temp = current_main.get("temp")
+    feels_like = current_main.get("feels_like")
+    humidity = current_main.get("humidity")
+    wind = current.get("wind", {}) if isinstance(current, dict) else {}
+    description = weather.get("description") or weather.get("main") or "unknown conditions"
+    alert_count = len(alerts) if isinstance(alerts, list) else 0
+
+    temp_text = f"{round(temp)}°C" if isinstance(temp, (int, float)) else "unknown temperature"
+    feels_text = f", feels like {round(feels_like)}°C" if isinstance(feels_like, (int, float)) else ""
+    humidity_text = f" Humidity is {humidity}%." if humidity is not None else ""
+    wind_text = f" Wind is {wind.get('speed')} m/s." if wind.get("speed") is not None else ""
+    alert_text = (
+        f" There are {alert_count} active weather alert(s), so pay attention."
+        if alert_count else
+        " No active weather alerts are showing right now."
+    )
+
+    tone_prefix = {
+        "professional": "Executive summary:",
+        "pirate": "Fallback forecast, captain:",
+        "drill_sergeant": "Weather order:",
+        "doomsday": "Emergency non-LLM forecast:",
+    }.get(tone, "Budget-safe forecast:")
+
+    return (
+        f"{tone_prefix} {display_name}: {description}, {temp_text}{feels_text}."
+        f"{humidity_text}{wind_text} Air quality: {aqi}.{alert_text} "
+        "The fancy roast engine is taking a cost-control break, but the weather data is still doing its job."
+    )
+
 def get_full_weather_summary_by_coords(
     lat: float,
     lon: float,
@@ -414,6 +461,12 @@ def get_full_weather_summary_by_coords(
         except Exception:
             display_name = f"{lat:.3f}, {lon:.3f}"
 
+    record_event_metric(
+        "weather_data_fetched",
+        location=display_name,
+        tone=tone,
+    )
+
     # NEW: Fetch news context for location
     country_code = extract_country_code(display_name)
     news_articles = get_location_news(display_name, country_code=country_code, max_results=3)
@@ -449,7 +502,21 @@ User prompt context:
 {user_prompt}
 """
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    cache_key, cache_key_parts = build_cache_key(
+        location_label=display_name,
+        lat=lat,
+        lon=lon,
+        current=current,
+        tone=tone,
+        prompt_version=PROMPT_VERSION,
+    )
+    cached, cache_error = get_cached_response_with_status(cache_key)
+    cache_status = "miss"
+    quota_status = "not_checked"
+    quota_details = None
+    llm_called = False
+    fallback_used = False
+    fallback_reason = None
 
     # Get tone configuration
     tone_config = TONE_PRESETS.get(tone, TONE_PRESETS["sarcastic"])
@@ -466,22 +533,193 @@ User prompt context:
     # Add current request
     messages.append({"role": "user", "content": summary_input})
 
-    # Call OpenAI with logging
-    start_time = time.time()
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=messages,
-        max_tokens=906
-    )
-    duration_ms = (time.time() - start_time) * 1000
+    if cached:
+        cache_status = "hit"
+        quota_status = "not_counted_cache_hit"
+        gpt_summary = cached["response_text"]
+        record_event_metric(
+            "cache_hit",
+            location=display_name,
+            tone=tone,
+            cache_status=cache_status,
+            quota_status=quota_status,
+        )
+        logger.info("LLM cache hit | %s | %s | %s", display_name, tone, cache_key[:12])
+    elif cache_error:
+        cache_status = "error"
+        fallback_used = True
+        fallback_reason = "cache_error"
+        gpt_summary = build_fallback_roast(
+            display_name,
+            current,
+            forecast=forecast,
+            alerts=alerts,
+            tone=tone,
+            reason=fallback_reason,
+        )
+        record_event_metric(
+            "fallback_used",
+            location=display_name,
+            tone=tone,
+            cache_status=cache_status,
+            quota_status=quota_status,
+            fallback_reason=fallback_reason,
+        )
+        logger.warning("LLM cache error fallback | %s | %s | %s", display_name, tone, cache_error)
+    else:
+        record_event_metric(
+            "cache_miss",
+            location=display_name,
+            tone=tone,
+            cache_status=cache_status,
+        )
+        quota_context = quota_context_from_request()
+        quota_details = check_llm_quota(quota_context)
+        quota_status = quota_details.get("quota_status", "unknown")
+        if quota_status == "unavailable":
+            fallback_used = True
+            fallback_reason = "cache_error"
+            gpt_summary = build_fallback_roast(
+                display_name,
+                current,
+                forecast=forecast,
+                alerts=alerts,
+                tone=tone,
+                reason=fallback_reason,
+            )
+            record_event_metric(
+                "fallback_used",
+                location=display_name,
+                tone=tone,
+                cache_status=cache_status,
+                quota_status=quota_status,
+                fallback_reason=fallback_reason,
+            )
+            logger.warning("LLM quota database fallback | %s | %s", display_name, tone)
+        elif not quota_details.get("allowed", True):
+            fallback_used = True
+            fallback_reason = "quota_exceeded"
+            gpt_summary = build_fallback_roast(
+                display_name,
+                current,
+                forecast=forecast,
+                alerts=alerts,
+                tone=tone,
+                reason=fallback_reason,
+            )
+            record_event_metric(
+                "quota_limited",
+                location=display_name,
+                tone=tone,
+                cache_status=cache_status,
+                quota_status=quota_status,
+                fallback_reason=fallback_reason,
+            )
+            record_event_metric(
+                "fallback_used",
+                location=display_name,
+                tone=tone,
+                cache_status=cache_status,
+                quota_status=quota_status,
+                fallback_reason=fallback_reason,
+            )
+            logger.warning(
+                "LLM quota limited | %s | %s | reason=%s",
+                display_name,
+                tone,
+                quota_details.get("reason"),
+            )
+        elif os.getenv("DISABLE_LLM", "").strip().lower() == "true" or not OPENAI_API_KEY:
+            fallback_used = True
+            fallback_reason = "llm_disabled"
+            gpt_summary = build_fallback_roast(
+                display_name,
+                current,
+                forecast=forecast,
+                alerts=alerts,
+                tone=tone,
+                reason=fallback_reason,
+            )
+            record_event_metric(
+                "fallback_used",
+                location=display_name,
+                tone=tone,
+                cache_status=cache_status,
+                quota_status=quota_status,
+                fallback_reason=fallback_reason,
+            )
+            logger.warning("LLM disabled fallback | %s | %s", display_name, tone)
+        else:
+            try:
+                client = OpenAI(api_key=OPENAI_API_KEY)
 
-    gpt_summary = response.choices[0].message.content
+                # Call OpenAI with logging
+                start_time = time.time()
+                response = client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=messages,
+                    max_tokens=906
+                )
+                duration_ms = (time.time() - start_time) * 1000
+                llm_called = True
 
-    # Log LLM call with token usage
-    total_tokens = response.usage.total_tokens if response.usage else 0
-    # Rough cost estimate for gpt-4o-mini: $0.15/1M input, $0.60/1M output tokens
-    cost_estimate = (total_tokens / 1_000_000) * 0.30  # Average cost
-    log_llm_call(OPENAI_MODEL, total_tokens, cost_estimate, "success", f"{display_name} | {tone} | {duration_ms:.0f}ms")
+                gpt_summary = response.choices[0].message.content
+
+                # Log LLM call with token usage
+                total_tokens = response.usage.total_tokens if response.usage else 0
+                # Rough cost estimate for gpt-4o-mini: $0.15/1M input, $0.60/1M output tokens
+                cost_estimate = (total_tokens / 1_000_000) * 0.30  # Average cost
+                log_llm_call(OPENAI_MODEL, total_tokens, cost_estimate, "success", f"{display_name} | {tone} | {duration_ms:.0f}ms")
+                record_llm_usage(quota_context, cache_key=cache_key)
+                record_event_metric(
+                    "llm_called",
+                    location=display_name,
+                    tone=tone,
+                    cache_status=cache_status,
+                    quota_status=quota_status,
+                )
+
+                weather_id, weather_main = weather_identity(current)
+                weather_summary = " / ".join(filter(None, [weather_id, weather_main]))
+                save_cached_response(
+                    cache_key=cache_key,
+                    location_label=display_name,
+                    tone=tone,
+                    weather_summary=weather_summary,
+                    weather_id=weather_id,
+                    response_text=gpt_summary,
+                    prompt_version=PROMPT_VERSION,
+                    ttl_seconds=LLM_CACHE_TTL_SECONDS,
+                )
+            except Exception as exc:
+                fallback_used = True
+                fallback_reason = "llm_error"
+                llm_called = False
+                gpt_summary = build_fallback_roast(
+                    display_name,
+                    current,
+                    forecast=forecast,
+                    alerts=alerts,
+                    tone=tone,
+                    reason=fallback_reason,
+                )
+                record_event_metric(
+                    "llm_error",
+                    location=display_name,
+                    tone=tone,
+                    cache_status=cache_status,
+                    quota_status=quota_status,
+                    fallback_reason=fallback_reason,
+                )
+                record_event_metric(
+                    "fallback_used",
+                    location=display_name,
+                    tone=tone,
+                    cache_status=cache_status,
+                    quota_status=quota_status,
+                    fallback_reason=fallback_reason,
+                )
+                log_llm_call(OPENAI_MODEL, 0, 0.0, "error", f"{display_name} | {tone} | {type(exc).__name__}: {exc}")
 
     # Build raw response
     raw_response = {
@@ -497,6 +735,15 @@ User prompt context:
         "summary": gpt_summary,
         "tone": tone,
         "hourly": get_hourly_forecast(lat, lon),  # next 12 hours from WeatherAPI cache
+        "cache_status": cache_status,
+        "cache_key": cache_key,
+        "cache_key_parts": cache_key_parts,
+        "prompt_version": PROMPT_VERSION,
+        "quota_status": quota_status,
+        "quota_details": quota_details,
+        "llm_called": llm_called,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason,
     }
 
     # Return structured format if requested, otherwise return legacy format
@@ -705,6 +952,15 @@ def format_structured_weather_response(raw_response: dict) -> dict:
             "location": raw_response.get("location", ""),
             "coords": raw_response.get("coords", {}),
             "tone": raw_response.get("tone", "sarcastic"),
+            "cache_status": raw_response.get("cache_status"),
+            "cache_key": raw_response.get("cache_key"),
+            "cache_key_parts": raw_response.get("cache_key_parts"),
+            "prompt_version": raw_response.get("prompt_version"),
+            "quota_status": raw_response.get("quota_status"),
+            "quota_details": raw_response.get("quota_details"),
+            "llm_called": raw_response.get("llm_called"),
+            "fallback_used": raw_response.get("fallback_used"),
+            "fallback_reason": raw_response.get("fallback_reason"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "has_alerts": len(formatted_alerts) > 0,
             "has_news": len(news_articles) > 0,

@@ -39,6 +39,9 @@ REQUIRED_ENV_VARS = [
     "SMTP_PASS",
 ]
 
+if ENV not in ("dev", "development", "local", "test"):
+    REQUIRED_ENV_VARS.append("RATE_LIMIT_SALT")
+
 def validate_env():
     missing = [v for v in REQUIRED_ENV_VARS if not os.getenv(v, "").strip()]
     if missing:
@@ -65,12 +68,23 @@ from request_metrics import (
     get_metrics_summary,
     init_metrics_db,
     prune_old_metrics,
+    record_event_metric,
     record_request_metric,
 )
+from llm_cache import init_cache_db as _init_llm_cache_db
+from llm_quota import init_quota_db as _init_llm_quota_db
 
 app = Flask(__name__)
 limiter.init_app(app)
 _init_conversation_db()
+try:
+    _init_llm_cache_db()
+except Exception as exc:
+    print(f"LLM cache initialization failed: {exc}")
+try:
+    _init_llm_quota_db()
+except Exception as exc:
+    print(f"LLM quota initialization failed: {exc}")
 try:
     init_metrics_db()
     prune_old_metrics()
@@ -268,6 +282,7 @@ def rate_limit_exceeded(e):
     req_id = g.get("request_id", "unknown")
     rid = f"[REQ-{req_id[:8]}]"
     print(f"⚠️ {rid} Rate limit exceeded: {request.method} {request.path} — {e.description}")
+    record_event_metric("rate_limited", endpoint=request.path, request_id=req_id)
     response = jsonify({
         "error": "Slow down, the donkey needs a break.",
         "retry_after": 60,
